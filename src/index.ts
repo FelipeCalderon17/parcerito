@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import { App, LogLevel } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
+import path from "node:path";
 import { Orchestrator } from "./agent.js";
+import { saveAttachments, slackFiles, type SlackFile } from "./attachments.js";
 import { loadConfig } from "./config.js";
 import { SessionStore } from "./sessions.js";
 import { chunkMessage, toSlackMrkdwn } from "./slack-format.js";
@@ -34,6 +36,7 @@ interface IncomingMessage {
   channel: string;
   ts: string;
   threadTs?: string;
+  files: SlackFile[];
 }
 
 let botUserId = "";
@@ -65,7 +68,7 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
     }
     return;
   }
-  if (!prompt) {
+  if (!prompt && msg.files.length === 0) {
     await reply("What do you need, parce? 🙂");
     return;
   }
@@ -126,7 +129,12 @@ async function runInThread(
   };
 
   try {
-    const fullPrompt = await withThreadContext(client, msg, threadKey, prompt);
+    const attachments = await saveAttachments(
+      msg.files,
+      path.join(workspace.threadDir(threadKey), ".attachments"),
+      config.SLACK_BOT_TOKEN,
+    );
+    const fullPrompt = (await withThreadContext(client, msg, threadKey, prompt)) + attachments;
     const result = await orchestrator.run({ threadKey, prompt: fullPrompt, signal: controller.signal, onProgress });
     clearTimeout(pending);
     const elapsed = formatDuration(Date.now() - started);
@@ -182,12 +190,14 @@ app.event("app_mention", async ({ event, client }) => {
     channel: event.channel,
     ts: event.ts,
     threadTs: event.thread_ts,
+    files: slackFiles("files" in event ? event.files : undefined),
   });
 });
 
 // DMs, plus follow-ups (without @mention) in channel threads the bot is already working in.
 app.message(async ({ message, client }) => {
-  if (message.subtype !== undefined || !("user" in message) || !message.user) return;
+  // Plain messages, plus messages with attachments (screenshots, logs).
+  if ((message.subtype !== undefined && message.subtype !== "file_share") || !("user" in message) || !message.user) return;
   if (message.user === botUserId || ("bot_id" in message && message.bot_id)) return;
   const text = message.text ?? "";
   const isDm = message.channel_type === "im";
@@ -196,7 +206,8 @@ app.message(async ({ message, client }) => {
     if (text.includes(`<@${botUserId}>`) || !threadTs) return; // app_mention handles it
     if (!sessions.has(toThreadKey(message.channel, threadTs))) return;
   }
-  await handle(client, { user: message.user, text, channel: message.channel, ts: message.ts, threadTs });
+  const files = slackFiles("files" in message ? message.files : undefined);
+  await handle(client, { user: message.user, text, channel: message.channel, ts: message.ts, threadTs, files });
 });
 
 const auth = await app.client.auth.test();
