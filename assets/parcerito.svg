@@ -17,7 +17,8 @@
     </clipPath>
   </defs>
 
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- full-bleed square: Slack and GitHub round the corners themselves -->
+  <rect width="512" height="512" fill="url(#bg)"/>
 
   <g transform="translate(0 -32)">
   <!-- scarf in the Colombian flag colors (2 : 1 : 1) -->
