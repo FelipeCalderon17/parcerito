@@ -1,0 +1,205 @@
+import fs from "node:fs";
+import { App, LogLevel } from "@slack/bolt";
+import type { WebClient } from "@slack/web-api";
+import { Orchestrator } from "./agent.js";
+import { loadConfig } from "./config.js";
+import { SessionStore } from "./sessions.js";
+import { chunkMessage, toSlackMrkdwn } from "./slack-format.js";
+import { Workspace } from "./workspace.js";
+
+const config = loadConfig();
+fs.mkdirSync(config.DATA_DIR, { recursive: true });
+
+const sessions = new SessionStore(config.DATA_DIR);
+const workspace = new Workspace(config.DATA_DIR, config.GITHUB_REPOS);
+const orchestrator = new Orchestrator(config, sessions, workspace);
+
+const app = new App({
+  token: config.SLACK_BOT_TOKEN,
+  appToken: config.SLACK_APP_TOKEN,
+  socketMode: true,
+  logLevel: LogLevel.INFO,
+});
+
+interface ActiveRun {
+  controller: AbortController;
+  done: Promise<void>;
+}
+const activeRuns = new Map<string, ActiveRun>();
+const STOP_WORDS = /^(stop|para|pare|cancel|cancela)[.!]*$/i;
+
+interface IncomingMessage {
+  user: string;
+  text: string;
+  channel: string;
+  ts: string;
+  threadTs?: string;
+}
+
+let botUserId = "";
+
+/** Stable id for a Slack thread; also used in branch and folder names. */
+function toThreadKey(channel: string, threadTs: string): string {
+  return `${channel}-${threadTs}`.replace(/[^A-Za-z0-9-]/g, "").toLowerCase();
+}
+
+async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
+  const threadTs = msg.threadTs ?? msg.ts;
+  const reply = (text: string) => client.chat.postMessage({ channel: msg.channel, thread_ts: threadTs, text });
+
+  if (!config.ALLOWED_SLACK_USER_IDS.includes(msg.user)) {
+    await reply(`Hola! I'm ${config.BOT_NAME}, a personal assistant, so I only take requests from my human 🙏`);
+    return;
+  }
+
+  const threadKey = toThreadKey(msg.channel, threadTs);
+  const prompt = msg.text.replaceAll(`<@${botUserId}>`, "").trim();
+  const active = activeRuns.get(threadKey);
+
+  if (STOP_WORDS.test(prompt)) {
+    if (active) {
+      active.controller.abort();
+      await reply("Listo, I stopped 🛑");
+    } else {
+      await reply("I'm not working on anything in this thread.");
+    }
+    return;
+  }
+  if (!prompt) {
+    await reply("¿Qué más, parce? Tell me what you need 🙂");
+    return;
+  }
+
+  // One run per thread at a time; new messages wait for the current one.
+  const previous = active?.done ?? Promise.resolve();
+  if (active) await reply("Got it, I'll get to that as soon as I finish the current task ⏳");
+
+  const controller = new AbortController();
+  const done = previous
+    .catch(() => {})
+    .then(() => runInThread(client, msg, threadTs, threadKey, prompt, controller));
+  activeRuns.set(threadKey, { controller, done });
+  done.finally(() => {
+    if (activeRuns.get(threadKey)?.done === done) activeRuns.delete(threadKey);
+  });
+}
+
+async function runInThread(
+  client: WebClient,
+  msg: IncomingMessage,
+  threadTs: string,
+  threadKey: string,
+  prompt: string,
+  controller: AbortController,
+): Promise<void> {
+  if (controller.signal.aborted) return;
+  const started = Date.now();
+  const react = (name: string) =>
+    client.reactions.add({ channel: msg.channel, timestamp: msg.ts, name }).catch(() => {});
+  await react("eyes");
+
+  const status = await client.chat.postMessage({
+    channel: msg.channel,
+    thread_ts: threadTs,
+    text: "🫡 On it, parce…",
+  });
+  const steps: string[] = [];
+  let lastUpdate = 0;
+  let pending: NodeJS.Timeout | undefined;
+  const renderStatus = (header: string) =>
+    client.chat
+      .update({
+        channel: msg.channel,
+        ts: status.ts!,
+        text: [header, ...steps.slice(-6).map((s) => `• ${s}`)].join("\n"),
+      })
+      .catch(() => {});
+  const onProgress = (line: string) => {
+    if (steps.at(-1) === line) return;
+    steps.push(line);
+    clearTimeout(pending);
+    const wait = Math.max(0, 2500 - (Date.now() - lastUpdate));
+    pending = setTimeout(() => {
+      lastUpdate = Date.now();
+      renderStatus("🫡 Working on it…");
+    }, wait);
+  };
+
+  try {
+    const fullPrompt = await withThreadContext(client, msg, threadKey, prompt);
+    const result = await orchestrator.run({ threadKey, prompt: fullPrompt, signal: controller.signal, onProgress });
+    clearTimeout(pending);
+    const elapsed = formatDuration(Date.now() - started);
+    await renderStatus(`${result.isError ? "⚠️" : "✅"} Done in ${elapsed}`);
+    for (const chunk of chunkMessage(toSlackMrkdwn(result.text))) {
+      await client.chat.postMessage({ channel: msg.channel, thread_ts: threadTs, text: chunk });
+    }
+    await react(result.isError ? "warning" : "white_check_mark");
+  } catch (error) {
+    clearTimeout(pending);
+    if (controller.signal.aborted) {
+      await renderStatus("🛑 Stopped");
+      return;
+    }
+    console.error(`[${threadKey}] run failed`, error);
+    await renderStatus("💥 Something broke");
+    await client.chat.postMessage({
+      channel: msg.channel,
+      thread_ts: threadTs,
+      text: `Uy, something went wrong: \`${error instanceof Error ? error.message : String(error)}\``,
+    });
+    await react("x");
+  }
+}
+
+/** First time we're called into an existing thread (e.g. a Sentry alert), include what was said before. */
+async function withThreadContext(
+  client: WebClient,
+  msg: IncomingMessage,
+  threadKey: string,
+  prompt: string,
+): Promise<string> {
+  if (!msg.threadTs || sessions.get(threadKey).claudeSessionId) return prompt;
+  const replies = await client.conversations.replies({ channel: msg.channel, ts: msg.threadTs, limit: 50 });
+  const history = (replies.messages ?? [])
+    .filter((m) => m.ts !== msg.ts)
+    .map((m) => `${m.user ? `<@${m.user}>` : (m.bot_profile?.name ?? "bot")}: ${m.text ?? ""}`)
+    .join("\n");
+  return history ? `Earlier messages in this Slack thread:\n${history}\n\nMy request: ${prompt}` : prompt;
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+// @mentions in channels.
+app.event("app_mention", async ({ event, client }) => {
+  if (!event.user) return;
+  await handle(client, {
+    user: event.user,
+    text: event.text,
+    channel: event.channel,
+    ts: event.ts,
+    threadTs: event.thread_ts,
+  });
+});
+
+// DMs, plus follow-ups (without @mention) in channel threads the bot is already working in.
+app.message(async ({ message, client }) => {
+  if (message.subtype !== undefined || !("user" in message) || !message.user) return;
+  if (message.user === botUserId || ("bot_id" in message && message.bot_id)) return;
+  const text = message.text ?? "";
+  const isDm = message.channel_type === "im";
+  const threadTs = "thread_ts" in message ? message.thread_ts : undefined;
+  if (!isDm) {
+    if (text.includes(`<@${botUserId}>`) || !threadTs) return; // app_mention handles it
+    if (!sessions.has(toThreadKey(message.channel, threadTs))) return;
+  }
+  await handle(client, { user: message.user, text, channel: message.channel, ts: message.ts, threadTs });
+});
+
+const auth = await app.client.auth.test();
+botUserId = auth.user_id ?? "";
+await app.start();
+console.log(`⚡ ${config.BOT_NAME} is running as @${auth.user} (Claude: ${config.CLAUDE_MODEL}, Codex: ${config.CODEX_MODEL})`);

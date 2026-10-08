@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Parcerito: an arepa bot with a sombrero vueltiao</title>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="75%">
+      <stop offset="0" stop-color="#2f56c4"/>
+      <stop offset="1" stop-color="#16307a"/>
+    </radialGradient>
+    <radialGradient id="arepa" cx="45%" cy="38%" r="70%">
+      <stop offset="0" stop-color="#ffe0a0"/>
+      <stop offset="1" stop-color="#eab35e"/>
+    </radialGradient>
+    <clipPath id="crown">
+      <path d="M190 214 C190 146 214 116 256 116 C298 116 322 146 322 214 Z"/>
+    </clipPath>
+    <clipPath id="scarf">
+      <rect x="150" y="414" width="212" height="50" rx="20"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <g transform="translate(0 -32)">
+  <!-- scarf in the Colombian flag colors (2 : 1 : 1) -->
+  <g clip-path="url(#scarf)">
+    <rect x="150" y="414" width="212" height="26" fill="#FCD116"/>
+    <rect x="150" y="440" width="212" height="12" fill="#003893"/>
+    <rect x="150" y="452" width="212" height="12" fill="#CE1126"/>
+  </g>
+
+  <!-- arepa head -->
+  <ellipse cx="256" cy="318" rx="128" ry="112" fill="url(#arepa)" stroke="#b97a2e" stroke-width="8"/>
+  <g fill="#c98a3e" opacity="0.55">
+    <ellipse cx="168" cy="300" rx="9" ry="6"/>
+    <ellipse cx="350" cy="292" rx="7" ry="5"/>
+    <ellipse cx="214" cy="404" rx="8" ry="5"/>
+    <ellipse cx="318" cy="398" rx="10" ry="6"/>
+    <ellipse cx="256" cy="414" rx="6" ry="4"/>
+  </g>
+
+  <!-- terminal face -->
+  <rect x="174" y="262" width="164" height="104" rx="30" fill="#151a2e"/>
+  <rect x="174" y="262" width="164" height="104" rx="30" fill="none" stroke="#0c0f1c" stroke-width="5"/>
+  <path d="M206 294 L232 314 L206 334" fill="none" stroke="#7CF29A" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M248 336 H286" stroke="#7CF29A" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="190" cy="384" r="15" fill="#f28b82" opacity="0.75"/>
+  <circle cx="322" cy="384" r="15" fill="#f28b82" opacity="0.75"/>
+
+  <!-- sombrero vueltiao: brim -->
+  <ellipse cx="256" cy="214" rx="196" ry="48" fill="#f7efdc" stroke="#1a1a1a" stroke-width="7"/>
+  <ellipse cx="256" cy="214" rx="168" ry="38" fill="none" stroke="#1a1a1a" stroke-width="9" stroke-dasharray="16 10"/>
+  <ellipse cx="256" cy="214" rx="138" ry="29" fill="none" stroke="#1a1a1a" stroke-width="6"/>
+  <!-- crown -->
+  <path d="M190 214 C190 146 214 116 256 116 C298 116 322 146 322 214 Z" fill="#f7efdc"/>
+  <g clip-path="url(#crown)" fill="#1a1a1a">
+    <rect x="180" y="138" width="160" height="10"/>
+    <rect x="180" y="162" width="160" height="10" />
+    <rect x="180" y="186" width="160" height="10"/>
+  </g>
+  <path d="M190 214 C190 146 214 116 256 116 C298 116 322 146 322 214" fill="none" stroke="#1a1a1a" stroke-width="7" stroke-linejoin="round"/>
+  </g>
+</svg>

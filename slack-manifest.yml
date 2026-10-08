@@ -1,0 +1,37 @@
+# Create the Slack app from this file: https://api.slack.com/apps → Create New App → From a manifest.
+# Rename "felipe-calderon-parcerito" to your own <name>-<surname>-parcerito.
+display_information:
+  name: felipe-calderon-parcerito
+  description: Felipe's coding parcero. Claude plans and reviews, Codex writes the code.
+  background_color: "#1d3b8f"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: parcerito
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - reactions:write
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
