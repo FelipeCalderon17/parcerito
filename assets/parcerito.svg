@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <title>Parcerito: an arepa bot with a sombrero vueltiao</title>
+  <title>Parcerito: a smiling arepa with a sombrero vueltiao</title>
   <defs>
     <radialGradient id="bg" cx="50%" cy="35%" r="75%">
       <stop offset="0" stop-color="#2f56c4"/>
@@ -38,13 +38,14 @@
     <ellipse cx="256" cy="414" rx="6" ry="4"/>
   </g>
 
-  <!-- terminal face -->
-  <rect x="174" y="262" width="164" height="104" rx="30" fill="#151a2e"/>
-  <rect x="174" y="262" width="164" height="104" rx="30" fill="none" stroke="#0c0f1c" stroke-width="5"/>
-  <path d="M206 294 L232 314 L206 334" fill="none" stroke="#7CF29A" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M248 336 H286" stroke="#7CF29A" stroke-width="11" stroke-linecap="round"/>
-  <circle cx="190" cy="384" r="15" fill="#f28b82" opacity="0.75"/>
-  <circle cx="322" cy="384" r="15" fill="#f28b82" opacity="0.75"/>
+  <!-- face -->
+  <ellipse cx="214" cy="306" rx="17" ry="22" fill="#2a1a10"/>
+  <ellipse cx="298" cy="306" rx="17" ry="22" fill="#2a1a10"/>
+  <circle cx="220" cy="298" r="6" fill="#fff"/>
+  <circle cx="304" cy="298" r="6" fill="#fff"/>
+  <path d="M222 350 Q256 382 290 350" fill="none" stroke="#2a1a10" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="182" cy="356" r="17" fill="#f28b82" opacity="0.75"/>
+  <circle cx="330" cy="356" r="17" fill="#f28b82" opacity="0.75"/>
 
   <!-- sombrero vueltiao: brim -->
   <ellipse cx="256" cy="214" rx="196" ry="48" fill="#f7efdc" stroke="#1a1a1a" stroke-width="7"/>

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/parcerito-1024.png" width="160" alt="Parcerito: an arepa bot wearing a sombrero vueltiao" />
+  <img src="assets/parcerito-1024.png" width="160" alt="Parcerito: a smiling arepa wearing a sombrero vueltiao" />
 </p>
 
 <h1 align="center">parcerito</h1>
