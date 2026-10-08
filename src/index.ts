@@ -48,7 +48,7 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
   const reply = (text: string) => client.chat.postMessage({ channel: msg.channel, thread_ts: threadTs, text });
 
   if (!config.ALLOWED_SLACK_USER_IDS.includes(msg.user)) {
-    await reply(`Hola! I'm ${config.BOT_NAME}, a personal assistant, so I only take requests from my human 🙏`);
+    await reply(`Hi! I'm ${config.BOT_NAME}, a personal assistant, so I only take requests from my human 🙏`);
     return;
   }
 
@@ -59,14 +59,14 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
   if (STOP_WORDS.test(prompt)) {
     if (active) {
       active.controller.abort();
-      await reply("Listo, I stopped 🛑");
+      await reply("Stopped 🛑");
     } else {
       await reply("I'm not working on anything in this thread.");
     }
     return;
   }
   if (!prompt) {
-    await reply("¿Qué más, parce? Tell me what you need 🙂");
+    await reply("What do you need, parce? 🙂");
     return;
   }
 
@@ -146,7 +146,7 @@ async function runInThread(
     await client.chat.postMessage({
       channel: msg.channel,
       thread_ts: threadTs,
-      text: `Uy, something went wrong: \`${error instanceof Error ? error.message : String(error)}\``,
+      text: `Something went wrong: \`${error instanceof Error ? error.message : String(error)}\``,
     });
     await react("x");
   }
