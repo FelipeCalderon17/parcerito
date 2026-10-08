@@ -106,9 +106,8 @@ async function runInThread(
     thread_ts: threadTs,
     text: "🫡 On it, parce…",
   });
+  // Steps stay hidden while working ("On it, parce…"); they're only shown if the run fails or is stopped.
   const steps: string[] = [];
-  let lastUpdate = 0;
-  let pending: NodeJS.Timeout | undefined;
   const renderStatus = (header: string) =>
     client.chat
       .update({
@@ -118,14 +117,7 @@ async function runInThread(
       })
       .catch(() => {});
   const onProgress = (line: string) => {
-    if (steps.at(-1) === line) return;
-    steps.push(line);
-    clearTimeout(pending);
-    const wait = Math.max(0, 2500 - (Date.now() - lastUpdate));
-    pending = setTimeout(() => {
-      lastUpdate = Date.now();
-      renderStatus("🫡 Working on it…");
-    }, wait);
+    if (steps.at(-1) !== line) steps.push(line);
   };
 
   try {
@@ -136,7 +128,6 @@ async function runInThread(
     );
     const fullPrompt = (await withThreadContext(client, msg, threadKey, prompt)) + attachments;
     const result = await orchestrator.run({ threadKey, prompt: fullPrompt, signal: controller.signal, onProgress });
-    clearTimeout(pending);
     // The live progress message is only useful while working: drop it on success, keep it as a trail on errors.
     if (result.isError) {
       await renderStatus(`⚠️ Finished with problems after ${formatDuration(Date.now() - started)}`);
@@ -148,7 +139,6 @@ async function runInThread(
     }
     await react(result.isError ? "warning" : "white_check_mark");
   } catch (error) {
-    clearTimeout(pending);
     if (controller.signal.aborted) {
       await renderStatus("🛑 Stopped");
       return;
