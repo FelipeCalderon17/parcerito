@@ -137,8 +137,12 @@ async function runInThread(
     const fullPrompt = (await withThreadContext(client, msg, threadKey, prompt)) + attachments;
     const result = await orchestrator.run({ threadKey, prompt: fullPrompt, signal: controller.signal, onProgress });
     clearTimeout(pending);
-    const elapsed = formatDuration(Date.now() - started);
-    await renderStatus(`${result.isError ? "⚠️" : "✅"} Done in ${elapsed}`);
+    // The live progress message is only useful while working: drop it on success, keep it as a trail on errors.
+    if (result.isError) {
+      await renderStatus(`⚠️ Finished with problems after ${formatDuration(Date.now() - started)}`);
+    } else {
+      await client.chat.delete({ channel: msg.channel, ts: status.ts! }).catch(() => renderStatus("✅ Done"));
+    }
     for (const chunk of chunkMessage(toSlackMrkdwn(result.text))) {
       await client.chat.postMessage({ channel: msg.channel, thread_ts: threadTs, text: chunk });
     }
