@@ -55,9 +55,10 @@ parcerito (Node + TypeScript, one Docker container)
 ```
 
 - **One thread, one task.** Each Slack thread gets its own worktree and branch (`parcerito/<thread>`), so tasks never
-  step on each other. Follow-ups in the thread continue the same Claude session and the same Codex conversation.
+  step on each other. Follow-ups in the thread (with an `@parcerito` mention) continue the same Claude session and the same Codex conversation.
 - **Thread context.** Mention it inside an existing thread (a Sentry alert, a bug report) and it reads the thread first.
-- **Say `stop`** in the thread to cancel the current run.
+- **Only answers when mentioned.** In channels it ignores thread replies that don't tag it. DMs don't need a mention.
+- **Say `@parcerito stop`** in the thread to cancel the current run.
 
 ## Setup
 

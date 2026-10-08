@@ -188,7 +188,7 @@ app.event("app_mention", async ({ event, client }) => {
   });
 });
 
-// DMs, plus follow-ups (without @mention) in channel threads the bot is already working in.
+// DMs only. In channels the bot answers only when @mentioned (app_mention above), even in threads it's working in.
 app.message(async ({ message, client }) => {
   // Plain messages, plus messages with attachments (screenshots, logs).
   if ((message.subtype !== undefined && message.subtype !== "file_share") || !("user" in message) || !message.user) return;
@@ -196,10 +196,7 @@ app.message(async ({ message, client }) => {
   const text = message.text ?? "";
   const isDm = message.channel_type === "im";
   const threadTs = "thread_ts" in message ? message.thread_ts : undefined;
-  if (!isDm) {
-    if (text.includes(`<@${botUserId}>`) || !threadTs) return; // app_mention handles it
-    if (!sessions.has(toThreadKey(message.channel, threadTs))) return;
-  }
+  if (!isDm) return;
   const files = slackFiles("files" in message ? message.files : undefined);
   await handle(client, { user: message.user, text, channel: message.channel, ts: message.ts, threadTs, files });
 });
