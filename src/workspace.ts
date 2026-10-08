@@ -16,10 +16,45 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  *   <data>/work/<thread>/<name>   one git worktree per Slack thread, on its own branch
  */
 export class Workspace {
+  private repoCache?: { repos: string[]; at: number };
+
   constructor(
     private readonly dataDir: string,
+    /** Entries are "owner/name" or "owner/*" for every repo the GitHub token can see in that org. */
     private readonly allowedRepos: string[],
   ) {}
+
+  /** Expands "owner/*" entries via `gh` (cached for 10 minutes). Falls back to the raw entry if listing fails. */
+  async listRepos(): Promise<string[]> {
+    if (this.repoCache && Date.now() - this.repoCache.at < 10 * 60_000) return this.repoCache.repos;
+    const repos: string[] = [];
+    for (const entry of this.allowedRepos) {
+      const [owner, name] = entry.split("/");
+      if (name !== "*") {
+        repos.push(entry);
+        continue;
+      }
+      try {
+        const { stdout } = await exec("gh", [
+          "repo", "list", owner, "--no-archived", "--limit", "200", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner",
+        ]);
+        repos.push(...stdout.split("\n").filter(Boolean));
+      } catch {
+        repos.push(entry);
+      }
+    }
+    this.repoCache = { repos, at: Date.now() };
+    return repos;
+  }
+
+  private resolveRepo(repo: string): string | undefined {
+    const wanted = repo.toLowerCase();
+    const exact = this.allowedRepos.find((r) => r.toLowerCase() === wanted);
+    if (exact) return exact;
+    const owner = wanted.split("/")[0];
+    const wildcard = this.allowedRepos.some((r) => r.toLowerCase() === `${owner}/*`);
+    return wildcard && /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : undefined;
+  }
 
   threadDir(threadKey: string): string {
     const dir = path.join(this.dataDir, "work", threadKey);
@@ -29,7 +64,7 @@ export class Workspace {
 
   /** Returns a worktree for `repo` in this thread, creating it from the latest default branch if needed. */
   async openRepo(threadKey: string, repo: string): Promise<{ path: string; branch: string; base: string }> {
-    const fullName = this.allowedRepos.find((r) => r.toLowerCase() === repo.toLowerCase());
+    const fullName = this.resolveRepo(repo);
     if (!fullName) {
       throw new Error(`Repo "${repo}" is not in GITHUB_REPOS (${this.allowedRepos.join(", ")}).`);
     }

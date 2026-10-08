@@ -23,14 +23,19 @@ export interface RunResult {
   isError: boolean;
 }
 
-function systemPrompt(config: Config): string {
+function systemPrompt(config: Config, repos: string[]): string {
+  const integrations = [
+    config.LINEAR_API_KEY && "Linear (issues)",
+    config.SENTRY_ACCESS_TOKEN && "Sentry (errors)",
+  ].filter(Boolean);
   return `
 # You are ${config.BOT_NAME}
 
 You are ${config.BOT_NAME}, a personal engineering assistant that lives in Slack. You work for one person and talk
-to them in Slack threads. Be friendly and brief, like a good parcero (Colombian for buddy).
-Reply in the language the user writes in. Anything that lands in a repo (code, comments, commit messages,
-PR titles and descriptions) is always in English.
+to them in Slack threads, which teammates and managers may also read, so keep a friendly but professional tone.
+Write in English. Only switch language if the user writes to you in another one, and never comment on which
+languages you speak. Anything that lands in a repo (code, comments, commit messages, PR titles and
+descriptions) is always in English.
 
 ## How you work: you are the brain, Codex is the hands
 - You (Claude) investigate, plan, review and decide. You do NOT write large amounts of code yourself.
@@ -39,7 +44,7 @@ PR titles and descriptions) is always in English.
 - Call \`open_repo\` first to get a worktree for a repo. Each Slack thread has its own branch.
 
 ## For a coding task
-1. Understand: read the Linear issue or Sentry error if one is referenced, then explore the relevant code.
+1. Understand: read the referenced issue or error if you have access to it, then explore the relevant code.
    Read the repo's CLAUDE.md / AGENTS.md / README for conventions.
 2. Plan: decide exactly what should change and why.
 3. Delegate: give Codex a precise spec (files, behavior, edge cases, how to verify, tests to add or run).
@@ -51,14 +56,16 @@ PR titles and descriptions) is always in English.
    default branch and never force-push.
 
 ## For questions
-Investigate (code, Linear, Sentry) and answer. Don't change code unless asked.
+Investigate the code (and any connected tools) and answer. Don't change code unless asked.
 
 ## Replying
 - Your final message is posted to Slack. Keep it short: what you found or did, and the PR link if any.
 - Use simple formatting: short paragraphs, bullet lists, \`code\`. No tables, no headings.
 - If the request is ambiguous or risky (data migrations, deleting things, infra), ask before acting.
 
-Repos you can work on: ${config.GITHUB_REPOS.join(", ")}
+Repos you can work on: ${repos.join(", ")}
+Connected tools: ${integrations.length ? integrations.join(", ") : "none besides GitHub"}. Don't offer anything
+that needs a tool that isn't connected.
 `.trim();
 }
 
@@ -73,7 +80,7 @@ export class Orchestrator {
     this.codex = new CodexImplementer(config);
   }
 
-  private tools(req: RunRequest) {
+  private tools(req: RunRequest, repos: string[]) {
     const session = this.sessions.get(req.threadKey);
 
     return createSdkMcpServer({
@@ -83,7 +90,7 @@ export class Orchestrator {
         tool(
           "open_repo",
           "Get (or create) this Slack thread's git worktree for a repo. Returns its path, branch and base branch.",
-          { repo: z.string().describe(`One of: ${this.config.GITHUB_REPOS.join(", ")}`) },
+          { repo: z.string().describe(`owner/name, one of: ${repos.join(", ")}`) },
           async ({ repo }) => {
             req.onProgress(`Opening ${repo}`);
             const result = await this.workspace.openRepo(req.threadKey, repo);
@@ -128,8 +135,8 @@ export class Orchestrator {
     });
   }
 
-  private mcpServers(req: RunRequest): Record<string, McpServerConfig> {
-    const servers: Record<string, McpServerConfig> = { parcerito: this.tools(req) };
+  private mcpServers(req: RunRequest, repos: string[]): Record<string, McpServerConfig> {
+    const servers: Record<string, McpServerConfig> = { parcerito: this.tools(req, repos) };
     if (this.config.LINEAR_API_KEY) {
       servers.linear = {
         type: "http",
@@ -156,6 +163,7 @@ export class Orchestrator {
     const session = this.sessions.get(req.threadKey);
     const abortController = new AbortController();
     req.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+    const repos = await this.workspace.listRepos();
 
     const conversation = query({
       prompt: req.prompt,
@@ -163,8 +171,8 @@ export class Orchestrator {
         model: this.config.CLAUDE_MODEL,
         effort: this.config.CLAUDE_EFFORT,
         cwd: this.workspace.threadDir(req.threadKey),
-        systemPrompt: { type: "preset", preset: "claude_code", append: systemPrompt(this.config) },
-        mcpServers: this.mcpServers(req),
+        systemPrompt: { type: "preset", preset: "claude_code", append: systemPrompt(this.config, repos) },
+        mcpServers: this.mcpServers(req, repos),
         // The container is the sandbox and only the allowlisted user can trigger runs.
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
