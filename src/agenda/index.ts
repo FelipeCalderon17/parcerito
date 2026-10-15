@@ -216,7 +216,7 @@ export class DailyAgenda {
     });
     const file = path.join(dir, `nico-sync-${date}.html`);
     fs.writeFileSync(file, html);
-    if (!rejected) warnings.push("No rejected-fields export yet: run `npm run rejected-fields` on your Mac, then DM me `agenda`.");
+    if (!rejected) warnings.push("No rejected-fields export yet: run `rejected-fields` in your terminal, then DM me `agenda`.");
     await this.deliver(dmChannel, file, date, items.length, skipped.length, created, warnings);
     return { file, items: items.length, created };
   }
@@ -231,7 +231,7 @@ export class DailyAgenda {
     warnings: string[],
   ) {
     const localFile = this.config.AGENDA_LOCAL_DIR
-      ? ` It opens file://${path.posix.join(this.config.AGENDA_LOCAL_DIR, path.basename(file))}`
+      ? ` It saves and opens file://${path.posix.join(this.config.AGENDA_LOCAL_DIR, path.basename(file))}`
       : "";
     const lines = [
       `📋 Agenda for today's sync with Nico: ${items} item${items === 1 ? "" : "s"}` +
@@ -240,7 +240,7 @@ export class DailyAgenda {
         ? `Filed on Dotterino's behalf (Triage): ${created.map((i) => `<${i.url}|${i.identifier}>`).join(", ")}`
         : "Everything was already tracked in Linear 👌",
       ...warnings.map((w) => `⚠️ ${w}`),
-      `Run \`npm run agenda\` in parcerito to open it.${localFile} Tick items as decided, then hit *Copy decisions for parcerito* and paste them here.`,
+      `To open it, run \`agenda\` in your terminal (or download the file below).${localFile} Tick items as decided, then hit *Copy decisions for parcerito* and paste them here.`,
     ];
     await this.client.files.uploadV2({
       channel_id: dmChannel,

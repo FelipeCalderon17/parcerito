@@ -30,7 +30,8 @@ interface ActiveRun {
 }
 const activeRuns = new Map<string, ActiveRun>();
 const STOP_WORDS = /^(stop|para|pare|cancel|cancela)[.!]*$/i;
-const AGENDA_COMMAND = /^agenda[.!]*$/i;
+// "agenda", "agenda bro", "agenda pls"…: short messages that start with the word.
+const AGENDA_COMMAND = /^agenda\b.{0,20}$/i;
 const agenda = new DailyAgenda(config, app.client);
 
 interface IncomingMessage {

@@ -131,7 +131,7 @@ function renderRejected(page: AgendaPage): string {
   const { rejected } = page;
   if (!rejected) {
     return `<section><h2>Rejected AI suggestions</h2><p class="warning">No export from production yet. Run
-<code>npm run rejected-fields</code> in parcerito on your Mac, then DM me <code>agenda</code> to rebuild this.</p></section>`;
+<code>rejected-fields</code> in your terminal, then DM me <code>agenda</code> to rebuild this.</p></section>`;
   }
   const exported = rejected.exportedAt.toLocaleString("en-US", {
     timeZone: page.timeZone,
