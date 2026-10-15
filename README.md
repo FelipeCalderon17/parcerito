@@ -120,6 +120,10 @@ Untracked ones are added as a comment on a matching open issue, or filed in the 
 the `parcerito` label. It then DMs you an HTML agenda: items grouped by section, each with a proposed solution, a
 "Decided" checkbox and a notes box, plus a button that copies the decisions so you can paste them back to parcerito.
 
+Messages that aren't issues (thanks, status updates, questions already answered) are listed as skipped, with the
+reason, instead of becoming agenda items. Run `npm run agenda` on your machine to download the latest agenda to
+`AGENDA_LOCAL_DIR` and open it in your browser.
+
 Each window starts where the previous scheduled run ended (Mondays cover the weekend); the very first one starts at
 `AGENDA_BACKFILL_SINCE`. DM `agenda` to build one on demand without moving the window. Needs `LINEAR_API_KEY`.
 

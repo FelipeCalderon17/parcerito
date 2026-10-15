@@ -52,6 +52,8 @@ const schema = z.object({
   AGENDA_TIMEZONE: z.string().default("America/Bogota"),
   // Start of the very first window (ISO date-time). Later runs pick up where the previous one ended.
   AGENDA_BACKFILL_SINCE: z.string().datetime({ offset: true }).optional(),
+  // Where `npm run agenda` saves the agenda on your machine; only used to print its file:// link.
+  AGENDA_LOCAL_DIR: z.string().optional(),
   // Linear team whose Triage receives issues created on Dotterino's behalf.
   LINEAR_TEAM_KEY: z.string().default("ENG"),
 

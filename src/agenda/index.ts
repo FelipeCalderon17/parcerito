@@ -146,7 +146,12 @@ export class DailyAgenda {
             },
             { cwd: dir, signal: AbortSignal.timeout(45 * 60_000) },
           )
-        : { overview: "No new messages from the service team in this window.", items: [], rejectedPatterns: [] };
+        : {
+            overview: "No new messages from the service team in this window.",
+            items: [],
+            skipped: [],
+            rejectedPatterns: [],
+          };
     fs.writeFileSync(path.join(dir, "triage.json"), JSON.stringify(triage, null, 2));
 
     const created: LinkedIssue[] = [];
@@ -173,8 +178,6 @@ export class DailyAgenda {
           );
           const issue = await this.linear.getIssue(linear.identifier);
           if (issue) issues.set(issue.identifier, issue);
-        } else if (linear.action === "none") {
-          linearNote = `No issue needed: ${linear.reason}`;
         }
       } catch (error) {
         console.error(`[agenda] Linear update failed for ${item.id}`, error);
@@ -182,6 +185,18 @@ export class DailyAgenda {
       }
       items.push({ ...item, issues: [...issues.values()], linearNote });
     }
+
+    // Anything Claude left out of both lists is shown as skipped, so a dropped conversation is still visible.
+    const classified = new Set([
+      ...triage.items.flatMap((i) => i.conversationIds),
+      ...triage.skipped.map((s) => s.conversationId),
+    ]);
+    const skipped = [
+      ...triage.skipped,
+      ...conversations
+        .filter((c) => !classified.has(c.id))
+        .map((c) => ({ conversationId: c.id, reason: "⚠️ Not classified by the triage, please check" })),
+    ].filter((s) => byId.has(s.conversationId));
 
     const warnings = missingChannels.length
       ? [`I'm not in these channels (add me or fix the name): ${missingChannels.map((c) => `#${c}`).join(", ")}`]
@@ -193,6 +208,7 @@ export class DailyAgenda {
       timeZone: this.config.AGENDA_TIMEZONE,
       overview: triage.overview,
       items,
+      skipped,
       conversations: byId,
       rejected,
       rejectedPatterns: triage.rejectedPatterns,
@@ -201,7 +217,7 @@ export class DailyAgenda {
     const file = path.join(dir, `nico-sync-${date}.html`);
     fs.writeFileSync(file, html);
     if (!rejected) warnings.push("No rejected-fields export yet: run `npm run rejected-fields` on your Mac, then DM me `agenda`.");
-    await this.deliver(dmChannel, file, date, items.length, created, warnings);
+    await this.deliver(dmChannel, file, date, items.length, skipped.length, created, warnings);
     return { file, items: items.length, created };
   }
 
@@ -210,16 +226,21 @@ export class DailyAgenda {
     file: string,
     date: string,
     items: number,
+    skipped: number,
     created: LinkedIssue[],
     warnings: string[],
   ) {
+    const localFile = this.config.AGENDA_LOCAL_DIR
+      ? ` It opens file://${path.posix.join(this.config.AGENDA_LOCAL_DIR, path.basename(file))}`
+      : "";
     const lines = [
-      `📋 Agenda for today's sync with Nico: ${items} item${items === 1 ? "" : "s"}.`,
+      `📋 Agenda for today's sync with Nico: ${items} item${items === 1 ? "" : "s"}` +
+        (skipped ? ` (${skipped} message${skipped === 1 ? "" : "s"} skipped as not issues).` : "."),
       created.length
         ? `Filed on Dotterino's behalf (Triage): ${created.map((i) => `<${i.url}|${i.identifier}>`).join(", ")}`
         : "Everything was already tracked in Linear 👌",
       ...warnings.map((w) => `⚠️ ${w}`),
-      "Open the file in your browser, tick items as decided, then hit *Copy decisions for parcerito* and paste them here.",
+      `Run \`npm run agenda\` in parcerito to open it.${localFile} Tick items as decided, then hit *Copy decisions for parcerito* and paste them here.`,
     ];
     await this.client.files.uploadV2({
       channel_id: dmChannel,

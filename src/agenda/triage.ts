@@ -8,7 +8,7 @@ export const SECTIONS = {
   ehr: "EHR integrations & push",
   bugs: "Bugs & reliability",
   requests: "Requests & feedback",
-  fyi: "Questions & FYI",
+  questions: "Open questions",
 } as const;
 export type Section = keyof typeof SECTIONS;
 
@@ -24,8 +24,13 @@ export interface TriageItem {
   linear:
     | { action: "tracked" }
     | { action: "existing"; identifier: string }
-    | { action: "create"; title: string; description: string }
-    | { action: "none"; reason: string };
+    | { action: "create"; title: string; description: string };
+}
+
+/** A conversation that isn't an issue (thanks, status updates, already answered), with why. */
+export interface SkippedConversation {
+  conversationId: string;
+  reason: string;
 }
 
 /** A pattern in the AI suggestions coders rejected, with what to change in the prompts. */
@@ -40,13 +45,14 @@ export interface RejectedPattern {
 export interface Triage {
   overview: string;
   items: TriageItem[];
+  skipped: SkippedConversation[];
   rejectedPatterns: RejectedPattern[];
 }
 
 const schema = {
   type: "object",
   additionalProperties: false,
-  required: ["overview", "items", "rejectedPatterns"],
+  required: ["overview", "items", "skipped", "rejectedPatterns"],
   properties: {
     overview: { type: "string", description: "2-4 sentences: the shape of the period, what stands out" },
     items: {
@@ -72,13 +78,25 @@ const schema = {
             additionalProperties: false,
             required: ["action"],
             properties: {
-              action: { type: "string", enum: ["tracked", "existing", "create", "none"] },
+              action: { type: "string", enum: ["tracked", "existing", "create"] },
               identifier: { type: "string", description: "For existing: the issue to attach the messages to" },
               title: { type: "string", description: "For create" },
               description: { type: "string", description: "For create: markdown body" },
-              reason: { type: "string", description: "For none: why no issue is needed" },
             },
           },
+        },
+      },
+    },
+    skipped: {
+      type: "array",
+      description: "Conversations that aren't issues",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["conversationId", "reason"],
+        properties: {
+          conversationId: { type: "string" },
+          reason: { type: "string", description: "One short line, e.g. 'Thank-you after the fix'" },
         },
       },
     },
@@ -147,24 +165,29 @@ Below are Slack conversations from customer and EHR channels between ${input.sin
 ${input.until.toISOString()}. Each has at least one new message from the service team (clinicians, coders,
 agency staff). Internal messages and bot replies (Dotterino is Nico's triage bot) are context only.
 
-Turn them into agenda items:
-- Group conversations about the same underlying problem into one item; one conversation belongs to one item.
-- Every conversation must appear in exactly one item.
+First decide, for each conversation, whether it's really an issue: something the team has to fix, decide,
+build or answer. Not issues: thanks, greetings, "ok/will check", status updates, scheduling, praise, a question
+the team already answered in the thread, or a report the thread shows is already resolved. Put those in
+skipped with a one-line reason. When in doubt, it's an issue: Felipe reviews the skipped list.
+
+Turn the issues into agenda items:
+- Group conversations about the same underlying problem into one item.
+- Every conversation must appear exactly once: in one item or in skipped.
 - Pick a section: prompts (AI-generated answers, wrong or missing form values, narrative quality, rejected
   suggestions), ehr (push/pull/sync with Axxess, Netsmart, Kantime, WellSky), bugs (app errors, outages,
-  performance), requests (features, workflow changes), fyi (questions, acknowledgements, status updates).
+  performance), requests (features, workflow changes), questions (customer questions still waiting for an
+  answer or a decision).
 - summary: what was reported and by whom. Never copy patient names, MRNs, dates of birth or clinical values.
 - proposal: your best proposed solution or next step, phrased so Felipe and Nico can decide on it in the meeting.
 - urgency: high if a customer is blocked or it affects many charts, low for nice-to-haves.
 
-Linear (team ${config.LINEAR_TEAM_KEY}). Every actionable conversation must end up tracked in an issue:
+Linear (team ${config.LINEAR_TEAM_KEY}). Every agenda item must end up tracked in an issue:
 - If every conversation in the item has alreadyTrackedIn entries, use action "tracked".
 - Otherwise search Linear (read-only tools) for an open issue about the same problem. If one clearly matches,
   use "existing" with its identifier; the messages will be attached to it as a comment.
 - Otherwise use "create" with a title and a markdown description in Dotterino's style: Report, Scope and
   evidence, Required validation. State what is reported vs. confirmed, no patient details, no speculation as fact.
   The Slack source links are appended automatically.
-- Use "none" only for conversations that need no work (thanks, scheduling, a question already answered).
 You can't create or edit anything in Linear yourself.
 
 ${

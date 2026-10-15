@@ -81,6 +81,7 @@ test("agenda HTML escapes Slack text", () => {
         issues: [{ identifier: "ENG-9", title: "M1400", url: "https://linear.app/x", state: "Triage", isNew: true }],
       },
     ],
+    skipped: [],
     conversations: new Map([[conversation.id, conversation]]),
     rejected: null,
     rejectedPatterns: [],
@@ -88,6 +89,7 @@ test("agenda HTML escapes Slack text", () => {
   });
   assert.ok(!html.includes("<script>alert"));
   assert.ok(html.includes("ENG-9 <b>new</b>"));
+  assert.ok(html.includes('data-title="M1400 omitted"'));
 });
 
 test("groups rejected suggestions by form and field, most rejected first", () => {
