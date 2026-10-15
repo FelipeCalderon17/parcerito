@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { Conversation } from "../src/agenda/collect.js";
 import { localParts } from "../src/agenda/index.js";
 import { issuesFor, slackTimestamps, sourceFooter, type LinkedIssue } from "../src/agenda/linear.js";
+import { groupRejected, type RejectedField } from "../src/agenda/rejected.js";
 import { renderAgenda } from "../src/agenda/render.js";
 
 const conversation: Conversation = {
@@ -81,8 +82,31 @@ test("agenda HTML escapes Slack text", () => {
       },
     ],
     conversations: new Map([[conversation.id, conversation]]),
+    rejected: null,
+    rejectedPatterns: [],
     warnings: [],
   });
   assert.ok(!html.includes("<script>alert"));
   assert.ok(html.includes("ENG-9 <b>new</b>"));
+});
+
+test("groups rejected suggestions by form and field, most rejected first", () => {
+  const row = (form: string, field_key: string): RejectedField => ({
+    id: `${form}-${field_key}-${Math.random()}`,
+    decided_at: "2026-10-15T12:00:00Z",
+    organization: "Mission",
+    form,
+    field_key,
+    field_label: field_key,
+    section: null,
+    rejected_via: "review",
+    reason: "Transcript only",
+    ai_value: "2",
+    coder_value: null,
+  });
+  const groups = groupRejected([row("SOC", "A1005"), row("SOC", "GG0100A"), row("SOC", "GG0100A"), row("ROC", "GG0100A")]);
+  assert.deepEqual(
+    groups.map((g) => `${g.form}:${g.fieldKey}:${g.rows.length}`),
+    ["SOC:GG0100A:2", "SOC:A1005:1", "ROC:GG0100A:1"],
+  );
 });

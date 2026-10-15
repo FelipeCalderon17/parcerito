@@ -1,6 +1,7 @@
 import type { Conversation } from "./collect.js";
 import type { LinkedIssue } from "./linear.js";
-import { SECTIONS, type Section, type TriageItem } from "./triage.js";
+import { short, type RejectedExport } from "./rejected.js";
+import { SECTIONS, type RejectedPattern, type Section, type TriageItem } from "./triage.js";
 
 export interface AgendaItem extends Omit<TriageItem, "linear"> {
   issues: (LinkedIssue & { isNew?: boolean })[];
@@ -15,6 +16,9 @@ export interface AgendaPage {
   overview: string;
   items: AgendaItem[];
   conversations: Map<string, Conversation>;
+  /** Null when today's export from `npm run rejected-fields` hasn't been uploaded. */
+  rejected: RejectedExport | null;
+  rejectedPatterns: RejectedPattern[];
   warnings: string[];
 }
 
@@ -51,7 +55,8 @@ ${items.map((item) => renderItem(item, page.conversations)).join("\n")}</section
   <div class="toolbar"><span id="progress"></span>
     <button id="copy">Copy decisions for parcerito</button></div>
 </header>
-<main>${sections || "<p>Nothing new from the service team. 🎉</p>"}</main>
+<main>${renderRejected(page)}
+${sections || "<section><h2>Customer chats</h2><p>Nothing new from the service team. 🎉</p></section>"}</main>
 <script>${SCRIPT}</script>
 </body></html>`;
 }
@@ -76,7 +81,7 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>):
     )
     .join("<br>");
 
-  return `<article class="item" data-id="${esc(item.id)}" data-issues="${esc(item.issues.map((i) => i.identifier).join(","))}">
+  return `<article class="item" data-id="${esc(item.id)}" data-title="${esc(item.title)}" data-issues="${esc(item.issues.map((i) => i.identifier).join(","))}">
   <label class="decided"><input type="checkbox"> Decided</label>
   <h3><span class="urgency ${item.urgency}">${item.urgency}</span> ${esc(item.title)}</h3>
   <p class="customers">${item.customers.map(esc).join(" · ")}</p>
@@ -86,6 +91,53 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>):
   <details><summary>Messages (${item.conversationIds.length})</summary><ul>${sources}</ul></details>
   <textarea placeholder="Decision / next step"></textarea>
 </article>`;
+}
+
+function renderRejected(page: AgendaPage): string {
+  const { rejected } = page;
+  if (!rejected) {
+    return `<section><h2>Rejected AI suggestions</h2><p class="warning">No export from production yet. Run
+<code>npm run rejected-fields</code> in parcerito on your Mac, then DM me <code>agenda</code> to rebuild this.</p></section>`;
+  }
+  const exported = rejected.exportedAt.toLocaleString("en-US", {
+    timeZone: page.timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const patterns = page.rejectedPatterns
+    .map(
+      (p, i) => `<article class="item" data-id="rejected-${i}" data-title="${esc(p.title)}" data-issues="${esc(p.relatedIssue ?? "")}">
+  <label class="decided"><input type="checkbox"> Decided</label>
+  <h3>${esc(p.title)}</h3>
+  <p class="customers">${p.fieldKeys.map(esc).join(" · ")}${p.relatedIssue ? ` · related: ${esc(p.relatedIssue)}` : ""}</p>
+  <p>${esc(p.finding)}</p>
+  <p class="proposal"><b>Proposal:</b> ${esc(p.proposal)}</p>
+  <textarea placeholder="Decision / next step"></textarea>
+</article>`,
+    )
+    .join("\n");
+  const rows = rejected.groups
+    .map((g) =>
+      g.rows
+        .map(
+          (r, i) => `<tr>${
+            i === 0
+              ? `<td rowspan="${g.rows.length}"><b>${esc(g.fieldKey)}</b> <span class="count">${g.rows.length}×</span><br><span class="muted">${esc(g.form)} · ${esc(g.fieldLabel)}</span></td>`
+              : ""
+          }<td>${esc(r.organization ?? "")}</td><td>${r.rejected_via === "review" ? "rejected" : "overwritten"}</td>
+<td><code>${esc(short(r.ai_value))}</code> → <code>${esc(short(r.coder_value))}</code></td><td>${esc(r.reason ?? "")}</td></tr>`,
+        )
+        .join(""),
+    )
+    .join("");
+  return `<section><h2>Rejected AI suggestions <span class="count">${rejected.total}</span></h2>
+<p class="meta">From the production export of ${esc(exported)}: fields a coder rejected or overwrote in this window.</p>
+${patterns}
+${
+  rows
+    ? `<details class="table"><summary>All ${rejected.total} by field</summary><table><thead><tr><th>Field</th><th>Customer</th><th>How</th><th>AI → coder</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table></details>`
+    : "<p>No rejections in this window. 🎉</p>"
+}</section>`;
 }
 
 function esc(value: string): string {
@@ -112,6 +164,8 @@ button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8p
 .proposal{border-left:3px solid var(--accent);padding-left:10px}
 .issue{font-weight:600;color:var(--accent)}.issue b{font-size:11px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:4px}
 details{font-size:13px;color:var(--muted)}a{color:var(--accent)}
+details.table{margin:12px 0}table{width:100%;border-collapse:collapse;margin-top:8px;color:var(--ink)}
+table{table-layout:fixed;font-size:13px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:6px 8px;overflow-wrap:anywhere}th:first-child{width:34%}code{font-size:12px}
 textarea{width:100%;min-height:52px;margin-top:8px;border:1px solid var(--line);border-radius:6px;padding:8px;background:transparent;color:inherit;font:inherit}
 `;
 
@@ -138,7 +192,7 @@ progress();
 document.getElementById("copy").addEventListener("click", async () => {
   const lines = items
     .filter((i) => state[i.dataset.id]?.decided || state[i.dataset.id]?.note)
-    .map((i) => "- " + i.querySelector("h3").innerText.replace(/^\\S+\\s/, "") +
+    .map((i) => "- " + i.dataset.title +
       " [" + (i.dataset.issues || "no issue") + "]" + (state[i.dataset.id].decided ? " ✅" : "") +
       ": " + (state[i.dataset.id].note || "(no notes)"));
   await navigator.clipboard.writeText("Decisions from the Nico sync " + document.body.dataset.agenda + ":\\n" + lines.join("\\n"));

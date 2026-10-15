@@ -123,6 +123,12 @@ the `parcerito` label. It then DMs you an HTML agenda: items grouped by section,
 Each window starts where the previous scheduled run ended (Mondays cover the weekend); the very first one starts at
 `AGENDA_BACKFILL_SINCE`. DM `agenda` to build one on demand without moving the window. Needs `LINEAR_API_KEY`.
 
+The agenda also has a "Rejected AI suggestions" section: form fields where a coder rejected or overwrote the AI's
+value in production, grouped into patterns with proposed prompt changes. Production is only reachable through your
+AWS SSO login, so this part runs on your machine: `npm run rejected-fields` logs in if needed, opens the database
+tunnel, exports the last 7 days and uploads them to your DM with the bot. Run it before the agenda (or run it, then
+DM `agenda`).
+
 ## Local development
 
 ```bash

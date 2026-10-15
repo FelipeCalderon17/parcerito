@@ -28,15 +28,25 @@ export interface TriageItem {
     | { action: "none"; reason: string };
 }
 
+/** A pattern in the AI suggestions coders rejected, with what to change in the prompts. */
+export interface RejectedPattern {
+  title: string;
+  fieldKeys: string[];
+  finding: string;
+  proposal: string;
+  relatedIssue?: string;
+}
+
 export interface Triage {
   overview: string;
   items: TriageItem[];
+  rejectedPatterns: RejectedPattern[];
 }
 
 const schema = {
   type: "object",
   additionalProperties: false,
-  required: ["overview", "items"],
+  required: ["overview", "items", "rejectedPatterns"],
   properties: {
     overview: { type: "string", description: "2-4 sentences: the shape of the period, what stands out" },
     items: {
@@ -72,6 +82,22 @@ const schema = {
         },
       },
     },
+    rejectedPatterns: {
+      type: "array",
+      description: "Patterns in the rejected AI suggestions; empty when there are none",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "fieldKeys", "finding", "proposal"],
+        properties: {
+          title: { type: "string" },
+          fieldKeys: { type: "array", items: { type: "string" } },
+          finding: { type: "string", description: "What coders keep correcting, with counts and customers" },
+          proposal: { type: "string", description: "The concrete prompt or source-policy change to discuss" },
+          relatedIssue: { type: "string", description: "Linear identifier of an open issue about it, if any" },
+        },
+      },
+    },
   },
 } as const;
 
@@ -92,7 +118,14 @@ const READ_ONLY_LINEAR = [
 
 export async function triageConversations(
   config: Config,
-  input: { conversations: Conversation[]; trackedIn: Map<string, LinkedIssue[]>; since: Date; until: Date },
+  input: {
+    conversations: Conversation[];
+    trackedIn: Map<string, LinkedIssue[]>;
+    /** Rejected AI suggestions from production, already summarized (see describeRejected). */
+    rejected?: string;
+    since: Date;
+    until: Date;
+  },
   opts: { cwd: string; signal: AbortSignal },
 ): Promise<Triage> {
   const payload = input.conversations.map((c) => ({
@@ -133,6 +166,21 @@ Linear (team ${config.LINEAR_TEAM_KEY}). Every actionable conversation must end 
   The Slack source links are appended automatically.
 - Use "none" only for conversations that need no work (thanks, scheduling, a question already answered).
 You can't create or edit anything in Linear yourself.
+
+${
+  input.rejected
+    ? `
+Rejected AI suggestions. These come from Lime production: form fields where a coder rejected the AI's value
+(with a reason) or overwrote it. They're Felipe's main input for prompt work. In rejectedPatterns, group them
+into patterns (same field, same kind of mistake, or the same source-policy complaint such as "transcript
+only"), most impactful first, and propose the concrete prompt or source-policy change for each. Link a related
+open Linear issue if you find one; don't turn these into agenda items or new issues. One-off rejections with no
+pattern can be a single "Other rejections" entry. Don't copy clinical values into the text.
+
+${input.rejected}
+`
+    : "There's no rejected-suggestions export today: return an empty rejectedPatterns."
+}
 
 Conversations:
 ${JSON.stringify(payload, null, 1)}

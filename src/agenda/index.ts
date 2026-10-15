@@ -4,6 +4,7 @@ import type { WebClient } from "@slack/web-api";
 import type { Config } from "../config.js";
 import { collectConversations, type Conversation } from "./collect.js";
 import { issuesFor, LinearClient, sourceFooter, type LinkedIssue } from "./linear.js";
+import { describeRejected, loadRejectedFields, type RejectedExport } from "./rejected.js";
 import { renderAgenda, type AgendaItem } from "./render.js";
 import { triageConversations } from "./triage.js";
 
@@ -121,14 +122,31 @@ export class DailyAgenda {
     const tracked = await this.linear.trackedSlackMessages(new Date(since.getTime() - LINEAR_LOOKBACK_MS));
     const trackedIn = new Map(conversations.map((c) => [c.id, issuesFor(c, tracked)]));
     const byId = new Map(conversations.map((c) => [c.id, c]));
+    const dmChannel = (await this.client.conversations.open({ users: this.recipient })).channel!.id!;
+    const rejected = await loadRejectedFields(this.client, {
+      dmChannel,
+      token: this.config.SLACK_BOT_TOKEN,
+      since,
+      until,
+    }).catch((error): RejectedExport | null => {
+      console.error("[agenda] couldn't load the rejected-fields export", error);
+      return null;
+    });
 
-    const triage = conversations.length
-      ? await triageConversations(
-          this.config,
-          { conversations, trackedIn, since, until },
-          { cwd: dir, signal: AbortSignal.timeout(45 * 60_000) },
-        )
-      : { overview: "No new messages from the service team in this window.", items: [] };
+    const triage =
+      conversations.length || rejected?.total
+        ? await triageConversations(
+            this.config,
+            {
+              conversations,
+              trackedIn,
+              rejected: rejected?.total ? describeRejected(rejected.groups) : undefined,
+              since,
+              until,
+            },
+            { cwd: dir, signal: AbortSignal.timeout(45 * 60_000) },
+          )
+        : { overview: "No new messages from the service team in this window.", items: [], rejectedPatterns: [] };
     fs.writeFileSync(path.join(dir, "triage.json"), JSON.stringify(triage, null, 2));
 
     const created: LinkedIssue[] = [];
@@ -176,16 +194,25 @@ export class DailyAgenda {
       overview: triage.overview,
       items,
       conversations: byId,
+      rejected,
+      rejectedPatterns: triage.rejectedPatterns,
       warnings,
     });
     const file = path.join(dir, `nico-sync-${date}.html`);
     fs.writeFileSync(file, html);
-    await this.deliver(file, date, items.length, created, warnings);
+    if (!rejected) warnings.push("No rejected-fields export yet: run `npm run rejected-fields` on your Mac, then DM me `agenda`.");
+    await this.deliver(dmChannel, file, date, items.length, created, warnings);
     return { file, items: items.length, created };
   }
 
-  private async deliver(file: string, date: string, items: number, created: LinkedIssue[], warnings: string[]) {
-    const dm = await this.client.conversations.open({ users: this.recipient });
+  private async deliver(
+    dmChannel: string,
+    file: string,
+    date: string,
+    items: number,
+    created: LinkedIssue[],
+    warnings: string[],
+  ) {
     const lines = [
       `📋 Agenda for today's sync with Nico: ${items} item${items === 1 ? "" : "s"}.`,
       created.length
@@ -195,7 +222,7 @@ export class DailyAgenda {
       "Open the file in your browser, tick items as decided, then hit *Copy decisions for parcerito* and paste them here.",
     ];
     await this.client.files.uploadV2({
-      channel_id: dm.channel!.id!,
+      channel_id: dmChannel,
       file: fs.readFileSync(file),
       filename: path.basename(file),
       title: `Nico sync · ${date}`,
