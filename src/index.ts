@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { App, LogLevel } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
 import path from "node:path";
+import { DailyAgenda } from "./agenda/index.js";
 import { Orchestrator } from "./agent.js";
 import { saveAttachments, slackFiles, type SlackFile } from "./attachments.js";
 import { loadConfig } from "./config.js";
@@ -29,6 +30,8 @@ interface ActiveRun {
 }
 const activeRuns = new Map<string, ActiveRun>();
 const STOP_WORDS = /^(stop|para|pare|cancel|cancela)[.!]*$/i;
+const AGENDA_COMMAND = /^agenda[.!]*$/i;
+const agenda = new DailyAgenda(config, app.client);
 
 interface IncomingMessage {
   user: string;
@@ -66,6 +69,13 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
     } else {
       await reply("I'm not working on anything in this thread.");
     }
+    return;
+  }
+  if (AGENDA_COMMAND.test(prompt) && agenda.enabled) {
+    await reply("Building the agenda, parce. I'll DM it to you in a few minutes 📋");
+    agenda.runNow().catch((error) =>
+      reply(`I couldn't build the agenda: \`${error instanceof Error ? error.message : String(error)}\``),
+    );
     return;
   }
   if (!prompt && msg.files.length === 0) {
@@ -154,20 +164,42 @@ async function runInThread(
   }
 }
 
-/** First time we're called into an existing thread (e.g. a Sentry alert), include what was said before. */
+const CHANNEL_CONTEXT_MESSAGES = 15;
+
+/**
+ * First time we're called into a conversation, include what was said before: the thread so far
+ * (e.g. a Sentry alert), or the latest channel messages when mentioned outside a thread.
+ */
 async function withThreadContext(
   client: WebClient,
   msg: IncomingMessage,
   threadKey: string,
   prompt: string,
 ): Promise<string> {
-  if (!msg.threadTs || sessions.get(threadKey).claudeSessionId) return prompt;
-  const replies = await client.conversations.replies({ channel: msg.channel, ts: msg.threadTs, limit: 50 });
-  const history = (replies.messages ?? [])
+  const isDm = msg.channel.startsWith("D");
+  if ((!msg.threadTs && isDm) || sessions.get(threadKey).claudeSessionId) return prompt;
+  const { label, messages } = msg.threadTs
+    ? {
+        label: "Earlier messages in this Slack thread",
+        messages: (await client.conversations.replies({ channel: msg.channel, ts: msg.threadTs, limit: 50 }))
+          .messages,
+      }
+    : {
+        label: "Recent messages in this Slack channel",
+        messages: (
+          await client.conversations.history({
+            channel: msg.channel,
+            latest: msg.ts,
+            inclusive: false,
+            limit: CHANNEL_CONTEXT_MESSAGES,
+          })
+        ).messages?.reverse(),
+      };
+  const history = (messages ?? [])
     .filter((m) => m.ts !== msg.ts)
     .map((m) => `${m.user ? `<@${m.user}>` : (m.bot_profile?.name ?? "bot")}: ${m.text ?? ""}`)
     .join("\n");
-  return history ? `Earlier messages in this Slack thread:\n${history}\n\nMy request: ${prompt}` : prompt;
+  return history ? `${label}:\n${history}\n\nMy request: ${prompt}` : prompt;
 }
 
 function formatDuration(ms: number): string {
@@ -204,4 +236,5 @@ app.message(async ({ message, client }) => {
 const auth = await app.client.auth.test();
 botUserId = auth.user_id ?? "";
 await app.start();
+agenda.start();
 console.log(`⚡ ${config.BOT_NAME} is running as @${auth.user} (Claude: ${config.CLAUDE_MODEL}, Codex: ${config.CODEX_MODEL})`);

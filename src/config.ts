@@ -38,6 +38,23 @@ const schema = z.object({
   SENTRY_ACCESS_TOKEN: z.string().optional(),
   SENTRY_HOST: z.string().optional(),
 
+  // Daily meeting agenda: scans these channels (names, no #) for messages from people outside the team,
+  // makes sure each one is tracked in Linear, and DMs an HTML agenda. Off when no channels are set.
+  AGENDA_CHANNELS: list,
+  // Slack user IDs of the internal team. Their messages (and bots') are context, not agenda items.
+  AGENDA_INTERNAL_USER_IDS: list,
+  // Who gets the agenda. Defaults to the first allowed user.
+  AGENDA_RECIPIENT_ID: z.string().optional(),
+  AGENDA_TIME: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/, "Use HH:MM")
+    .default("10:00"),
+  AGENDA_TIMEZONE: z.string().default("America/Bogota"),
+  // Start of the very first window (ISO date-time). Later runs pick up where the previous one ended.
+  AGENDA_BACKFILL_SINCE: z.string().datetime({ offset: true }).optional(),
+  // Linear team whose Triage receives issues created on Dotterino's behalf.
+  LINEAR_TEAM_KEY: z.string().default("ENG"),
+
   DATA_DIR: z.string().default(path.resolve("data")),
   BOT_NAME: z.string().default("Parcerito"),
 });

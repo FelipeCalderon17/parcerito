@@ -112,6 +112,17 @@ can log one of them out when tokens refresh.
 In Slack: `@parcerito what does the auth middleware in acme/api do?`, then something real:
 `@parcerito fix LIN-123`.
 
+## Daily meeting agenda (optional)
+
+Every weekday at `AGENDA_TIME` (default 10:00 `America/Bogota`), parcerito reads the `AGENDA_CHANNELS` it's a member
+of, picks the messages from people outside `AGENDA_INTERNAL_USER_IDS`, and checks that each one is tracked in Linear.
+Untracked ones are added as a comment on a matching open issue, or filed in the `LINEAR_TEAM_KEY` team's Triage with
+the `parcerito` label. It then DMs you an HTML agenda: items grouped by section, each with a proposed solution, a
+"Decided" checkbox and a notes box, plus a button that copies the decisions so you can paste them back to parcerito.
+
+Each window starts where the previous scheduled run ended (Mondays cover the weekend); the very first one starts at
+`AGENDA_BACKFILL_SINCE`. DM `agenda` to build one on demand without moving the window. Needs `LINEAR_API_KEY`.
+
 ## Local development
 
 ```bash

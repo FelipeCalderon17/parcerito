@@ -23,6 +23,12 @@ oauth_config:
       - groups:history
       - im:history
       - mpim:history
+      # Daily agenda: find the customer channels, name people, DM the HTML file.
+      - channels:read
+      - groups:read
+      - users:read
+      - im:write
+      - files:write
 settings:
   event_subscriptions:
     bot_events:
