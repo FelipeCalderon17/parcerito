@@ -504,7 +504,8 @@ document.getElementById("copy").addEventListener("click", async () => {
   const line = (i) => "- " + i.dataset.title + " [" + (i.dataset.issues || "no issue") + "]: " +
     (state[i.dataset.id]?.note || "(no notes)") + (i.dataset.refs ? "\\n  sources: " + i.dataset.refs : "");
   const payload = { v: 1, agenda, decided: decided.map(entry), open: open.map(entry),
-    cards: open.map((i) => cards.get(i.dataset.id)).filter(Boolean).map(slim) };
+    // The bot already has every item it generated; only hand-added ones travel in full.
+    cards: open.map((i) => cards.get(i.dataset.id)).filter((c) => c && c.manual).map(slim) };
   const text = "Decisions from the Nico sync " + agenda + "\\n\\nDecided (" + decided.length + "):\\n" +
     decided.map(line).join("\\n") + "\\n\\nNot decided, carry over to the next sync (" + open.length + "):\\n" +
     open.map((i) => "- " + i.dataset.title + (state[i.dataset.id]?.note ? ": " + state[i.dataset.id].note : "")).join("\\n") +
