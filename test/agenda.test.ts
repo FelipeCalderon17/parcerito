@@ -8,7 +8,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { renderAgenda } from "../src/agenda/render.js";
-import { loadCarryover, parseSync, saveCarryover, withoutSyncBlock, type SyncPayload } from "../src/agenda/sync.js";
+import {
+  loadCarryover,
+  parseDecisionsText,
+  parseSync,
+  saveCarryover,
+  withoutSyncBlock,
+  type SyncPayload,
+} from "../src/agenda/sync.js";
 
 const conversation: Conversation = {
   id: "C1-1792084072.359189",
@@ -160,4 +167,35 @@ test("decisions pasted in Slack round-trip, and open items carry over to later a
   assert.deepEqual(carried.map((c) => [c.id, c.carriedFrom, c.lastNote]), [["manual-1", "2026-10-16", "next time"]]);
   assert.equal(loadCarryover(dir, "2026-10-16").length, 0);
   assert.equal(loadCarryover(dir, "2026-10-19").length, 1);
+});
+
+test("reads the visible decision lists when the data block is missing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenda-"));
+  fs.mkdirSync(path.join(dir, "agenda", "2026-10-16"), { recursive: true });
+  const items = [
+    { id: "a", title: "Item A: with a colon", section: "x", issues: ["ENG-1"], sources: [] },
+    { id: "b", title: "Item B", section: "x", issues: [], sources: [] },
+    { id: "c", title: "Item C", section: "x", issues: [], sources: [] },
+  ];
+  fs.writeFileSync(
+    path.join(dir, "agenda", "2026-10-16", "nico-sync-2026-10-16.html"),
+    `<script type="application/json" id="agenda-data">${JSON.stringify({ items })}</script>`,
+  );
+  const text = [
+    "Decisions from the Nico sync 2026-10-16",
+    "",
+    "Decided (1):",
+    "- Item A: with a colon [ENG-1]: ship it",
+    "",
+    "1. and a second line",
+    "  sources: slack #x https://x",
+    "",
+    "Not decided, carry over to the next sync (2):",
+    "- Item B",
+    "- Item C: ask Megan first",
+  ].join("\n");
+  const payload = parseDecisionsText(text, dir)!;
+  assert.deepEqual(payload.decided, [{ id: "a", note: "ship it\n\n1. and a second line" }]);
+  assert.deepEqual(payload.open, [{ id: "b", note: "" }, { id: "c", note: "ask Megan first" }]);
+  assert.equal(parseDecisionsText("hello", dir), null);
 });

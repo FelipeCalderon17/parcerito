@@ -37,6 +37,50 @@ export function parseSync(text: string): SyncPayload | null {
   }
 }
 
+/**
+ * Fallback when the block got lost on the way (e.g. trimmed before sending): reads the visible lists that
+ * "Copy decisions" writes and matches the titles against that day's agenda.
+ */
+export function parseDecisionsText(raw: string, dataDir: string): SyncPayload | null {
+  // Slack escapes these in message text.
+  const text = raw.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const header = text.match(/Decisions from the Nico sync (\d{4}-\d{2}-\d{2})/);
+  if (!header) return null;
+  const agenda = header[1]!;
+  const byTitle = new Map([...loadAgendaCards(dataDir, agenda).values()].map((c) => [c.title.trim(), c.id]));
+  if (!byTitle.size) return null;
+
+  const decidedPart = text.match(/Decided \(\d+\):\n([\s\S]*?)(?:\n\s*Not decided, carry over[^\n]*\n|$)/)?.[1] ?? "";
+  const openPart = text.match(/Not decided, carry over[^\n]*\n([\s\S]*)$/)?.[1] ?? "";
+
+  const decided: SyncPayload["decided"] = [];
+  let current: { id: string; note: string } | null = null;
+  for (const line of decidedPart.split("\n")) {
+    const entry = line.match(/^- (.+?) \[[^\]]*\]: ?(.*)$/);
+    const id = entry && byTitle.get(entry[1]!.trim());
+    if (entry && id) {
+      current = { id, note: entry[2]! };
+      decided.push(current);
+    } else if (current && !/^\s+sources: /.test(line)) {
+      current.note += `\n${line}`;
+    }
+  }
+  for (const d of decided) d.note = d.note.trim();
+
+  const open = openPart
+    .split("\n")
+    .map((line) => line.match(/^- (.+?)(?:: (.*))?$/))
+    .flatMap((m) => {
+      // Titles can contain ": ", so try the whole line first.
+      const whole = m && byTitle.get(`${m[1]}${m[2] !== undefined ? `: ${m[2]}` : ""}`.trim());
+      if (whole) return [{ id: whole, note: "" }];
+      const id = m && byTitle.get(m[1]!.trim());
+      return id ? [{ id, note: m![2] ?? "" }] : [];
+    });
+  if (!decided.length && !open.length) return null;
+  return { v: 1, agenda, decided, open, cards: [] };
+}
+
 /** The message without the machine-readable block, for prompts and notes. */
 export function withoutSyncBlock(text: string): string {
   return text.replace(BLOCK, "").trim();

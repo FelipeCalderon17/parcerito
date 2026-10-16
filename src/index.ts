@@ -3,7 +3,7 @@ import { App, LogLevel } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
 import path from "node:path";
 import { DailyAgenda } from "./agenda/index.js";
-import { parseSync, readTextFiles, withoutSyncBlock } from "./agenda/sync.js";
+import { parseDecisionsText, parseSync, readTextFiles, withoutSyncBlock } from "./agenda/sync.js";
 import { Orchestrator } from "./agent.js";
 import { saveAttachments, slackFiles, type SlackFile } from "./attachments.js";
 import { loadConfig } from "./config.js";
@@ -89,13 +89,16 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
   let runPrompt = prompt;
   if (agenda.enabled) {
     const text = [prompt, await readTextFiles(msg.files, config.SLACK_BOT_TOKEN)].filter(Boolean).join("\n\n");
-    const sync = parseSync(text);
+    const sync = parseSync(text) ?? parseDecisionsText(text, config.DATA_DIR);
     if (sync) {
       const saved = agenda.recordSync(sync, withoutSyncBlock(text));
-      await reply(
-        `Saved ✅ ${saved.decided} decided, ${saved.carried.length} carried over to the next agenda. ` +
-          "Now let's update Linear 👇",
-      );
+      const carried = `${saved.carried.length} carried over to the next agenda`;
+      // Only the open items (e.g. a correction): nothing to turn into Linear updates.
+      if (!saved.decided) {
+        await reply(`Saved ✅ ${carried}: ${saved.carried.map((c) => c.title).join("; ") || "none"}.`);
+        return;
+      }
+      await reply(`Saved ✅ ${saved.decided} decided, ${carried}. Now let's update Linear 👇`);
       runPrompt = saved.prompt;
     }
   }
