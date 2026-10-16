@@ -6,6 +6,14 @@ import { collectConversations, type Conversation } from "./collect.js";
 import { issuesFor, LinearClient, sourceFooter, type LinkedIssue } from "./linear.js";
 import { describeRejected, loadRejectedFields, type RejectedExport } from "./rejected.js";
 import { renderAgenda, type AgendaItem } from "./render.js";
+import {
+  loadAgendaCards,
+  loadCarryover,
+  loadLastNotes,
+  saveCarryover,
+  type CarriedCard,
+  type SyncPayload,
+} from "./sync.js";
 import { triageConversations } from "./triage.js";
 
 // Same lookback the collector uses for threads that get new replies; issues citing them are at least this recent.
@@ -133,6 +141,9 @@ export class DailyAgenda {
       return null;
     });
 
+    const lastNotes = loadLastNotes(this.config.DATA_DIR, date);
+    const carried = await this.refreshCarried(loadCarryover(this.config.DATA_DIR, date));
+
     const triage =
       conversations.length || rejected?.total
         ? await triageConversations(
@@ -141,6 +152,7 @@ export class DailyAgenda {
               conversations,
               trackedIn,
               rejected: rejected?.total ? describeRejected(rejected.groups) : undefined,
+              lastNotes: lastNotes?.text,
               since,
               until,
             },
@@ -212,6 +224,8 @@ export class DailyAgenda {
       conversations: byId,
       rejected,
       rejectedPatterns: triage.rejectedPatterns,
+      carried,
+      lastNotes,
       warnings,
     });
     const file = path.join(dir, `nico-sync-${date}.html`);
@@ -219,6 +233,63 @@ export class DailyAgenda {
     if (!rejected) warnings.push("No rejected-fields export yet: run `rejected-fields` in your terminal, then DM me `agenda`.");
     await this.deliver(dmChannel, file, date, items.length, skipped.length, created, warnings);
     return { file, items: items.length, created };
+  }
+
+  /** Re-reads the carried items' Linear issues and drops items whose issues have all been closed since. */
+  private async refreshCarried(items: CarriedCard[]) {
+    const refreshed = await Promise.all(
+      items.map(async (item) => ({
+        ...item,
+        issueDetails: (await Promise.all(item.issues.map((id) => this.linear.getIssue(id)))).filter(
+          (i): i is LinkedIssue => Boolean(i),
+        ),
+      })),
+    );
+    const closed = (i: LinkedIssue) => i.stateType === "completed" || i.stateType === "canceled";
+    return refreshed.filter((item) => !item.issueDetails.length || !item.issueDetails.every(closed));
+  }
+
+  /**
+   * Stores the decisions pasted after a sync (the open items carry over to the next agenda) and returns the
+   * instructions for Claude to turn them, plus the meeting notes, into Linear updates.
+   */
+  recordSync(payload: SyncPayload, message: string): { decided: number; carried: CarriedCard[]; prompt: string } {
+    const carried = saveCarryover(this.config.DATA_DIR, payload);
+    const cards = loadAgendaCards(this.config.DATA_DIR, payload.agenda);
+    for (const card of payload.cards) if (!cards.has(card.id)) cards.set(card.id, card);
+    const decided = payload.decided.map(({ id, note }) => {
+      const card = cards.get(id);
+      return {
+        item: card?.title ?? id,
+        decision: note || "(ticked as decided, no notes)",
+        linearIssues: card?.issues ?? [],
+        summary: card?.summary,
+        proposalOnTheAgenda: card?.proposal,
+      };
+    });
+    const prompt = `
+Felipe just had his sync with Nico (agenda ${payload.agenda}). Below are the decisions he exported from the agenda.
+The ${carried.length} undecided items are already saved and will carry over to the next agenda; nothing to do there.
+
+Your job: turn the decisions into Linear updates.
+1. If this message doesn't include the meeting notes yet (e.g. a Granola summary), ask Felipe to paste them in this
+   thread, or say "skip". Wait for that before proposing anything.
+2. When you have the notes (or he skips), call save_meeting_notes with agenda_date "${payload.agenda}" and a clean
+   markdown version of the notes plus the decisions. They're shown on the next agenda and used as context.
+3. Read each decided item's Linear issues, then propose the changes per issue in one short list: move it out of
+   Triage (to which state), team/project, priority, assignee, labels, and a comment that records the decision
+   ("Decided in the Nico sync on ${payload.agenda}: …" with the relevant context from the notes). Only propose what
+   the decision or the notes support; if something is unclear, say so instead of guessing.
+4. Change nothing in Linear until Felipe confirms. Then apply exactly what he approved and report what you did,
+   with links. Never close or delete issues unless he explicitly says so.
+
+Decided items:
+${JSON.stringify(decided, null, 1)}
+
+Felipe's message:
+${message}
+`.trim();
+    return { decided: payload.decided.length, carried, prompt };
   }
 
   private async deliver(

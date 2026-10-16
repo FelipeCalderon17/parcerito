@@ -6,6 +6,7 @@ import {
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { saveMeetingNotes } from "./agenda/sync.js";
 import { CodexImplementer, truncate } from "./codex.js";
 import type { Config } from "./config.js";
 import type { SessionStore } from "./sessions.js";
@@ -131,6 +132,20 @@ export class Orchestrator {
               `Commands run:\n${result.commands.map((c) => `- ${truncate(c, 200)}`).join("\n") || "none"}`,
             ].join("\n\n");
             return { content: [{ type: "text", text }] };
+          },
+        ),
+        tool(
+          "save_meeting_notes",
+          "Save the notes of a sync with Nico (e.g. the Granola summary plus the decisions) so the next daily agenda " +
+            "shows them and uses them as context. Replaces earlier notes for the same agenda date.",
+          {
+            agenda_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("The agenda's date, YYYY-MM-DD"),
+            notes: z.string().min(1).describe("Markdown"),
+          },
+          async ({ agenda_date, notes }) => {
+            req.onProgress("Saving the meeting notes");
+            saveMeetingNotes(this.config.DATA_DIR, agenda_date, notes);
+            return { content: [{ type: "text", text: `Saved the notes for ${agenda_date}.` }] };
           },
         ),
       ],

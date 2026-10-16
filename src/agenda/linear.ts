@@ -5,6 +5,8 @@ export interface LinkedIssue {
   title: string;
   url: string;
   state: string;
+  /** Linear's state category: triage, backlog, unstarted, started, completed, canceled. */
+  stateType?: string;
 }
 
 const LABEL_NAME = "parcerito";
@@ -80,7 +82,7 @@ export class LinearClient {
 
   async getIssue(identifier: string): Promise<LinkedIssue | null> {
     const data = await this.gql<{ issue: RawIssue | null }>(
-      `query ($id: String!) { issue(id: $id) { identifier title url state { name } } }`,
+      `query ($id: String!) { issue(id: $id) { identifier title url state { name type } } }`,
       { id: identifier },
     ).catch(() => ({ issue: null }));
     return data.issue ? toLinked(data.issue) : null;
@@ -155,11 +157,17 @@ interface RawIssue {
   title: string;
   url: string;
   description?: string | null;
-  state?: { name: string } | null;
+  state?: { name: string; type?: string } | null;
 }
 
 function toLinked(issue: RawIssue): LinkedIssue {
-  return { identifier: issue.identifier, title: issue.title, url: issue.url, state: issue.state?.name ?? "" };
+  return {
+    identifier: issue.identifier,
+    title: issue.title,
+    url: issue.url,
+    state: issue.state?.name ?? "",
+    ...(issue.state?.type ? { stateType: issue.state.type } : {}),
+  };
 }
 
 /** Slack message timestamps cited in a Linear description or comment. */

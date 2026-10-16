@@ -3,6 +3,7 @@ import { App, LogLevel } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
 import path from "node:path";
 import { DailyAgenda } from "./agenda/index.js";
+import { parseSync, readTextFiles, withoutSyncBlock } from "./agenda/sync.js";
 import { Orchestrator } from "./agent.js";
 import { saveAttachments, slackFiles, type SlackFile } from "./attachments.js";
 import { loadConfig } from "./config.js";
@@ -84,6 +85,21 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
     return;
   }
 
+  // Decisions pasted from the agenda ("Copy decisions for parcerito"); long pastes arrive as text snippets.
+  let runPrompt = prompt;
+  if (agenda.enabled) {
+    const text = [prompt, await readTextFiles(msg.files, config.SLACK_BOT_TOKEN)].filter(Boolean).join("\n\n");
+    const sync = parseSync(text);
+    if (sync) {
+      const saved = agenda.recordSync(sync, withoutSyncBlock(text));
+      await reply(
+        `Saved ✅ ${saved.decided} decided, ${saved.carried.length} carried over to the next agenda. ` +
+          "Now let's update Linear 👇",
+      );
+      runPrompt = saved.prompt;
+    }
+  }
+
   // One run per thread at a time; new messages wait for the current one.
   const previous = active?.done ?? Promise.resolve();
   if (active) await reply("Got it, I'll get to that as soon as I finish the current task ⏳");
@@ -91,7 +107,7 @@ async function handle(client: WebClient, msg: IncomingMessage): Promise<void> {
   const controller = new AbortController();
   const done = previous
     .catch(() => {})
-    .then(() => runInThread(client, msg, threadTs, threadKey, prompt, controller));
+    .then(() => runInThread(client, msg, threadTs, threadKey, runPrompt, controller));
   activeRuns.set(threadKey, { controller, done });
   done.finally(() => {
     if (activeRuns.get(threadKey)?.done === done) activeRuns.delete(threadKey);

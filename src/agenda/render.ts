@@ -1,6 +1,7 @@
 import type { Conversation } from "./collect.js";
 import type { LinkedIssue } from "./linear.js";
 import { short, type RejectedExport } from "./rejected.js";
+import type { CarriedCard } from "./sync.js";
 import { SECTIONS, type RejectedPattern, type Section, type SkippedConversation, type TriageItem } from "./triage.js";
 
 export interface AgendaItem extends Omit<TriageItem, "linear"> {
@@ -20,13 +21,17 @@ export interface AgendaPage {
   /** Null when today's export from `npm run rejected-fields` hasn't been uploaded. */
   rejected: RejectedExport | null;
   rejectedPatterns: RejectedPattern[];
+  /** Items left open at an earlier sync, with their Linear issues refreshed. */
+  carried: (CarriedCard & { issueDetails: LinkedIssue[] })[];
+  /** Notes from the previous sync (e.g. the Granola summary). */
+  lastNotes: { date: string; text: string } | null;
   warnings: string[];
 }
 
 const URGENCY_ORDER = { high: 0, medium: 1, low: 2 } as const;
 
 /** Where an agenda item comes from, shown in its "Sources" accordion and embedded as JSON for other tools. */
-type Source =
+export type Source =
   | {
       kind: "slack";
       channel: string;
@@ -51,14 +56,26 @@ type Source =
         coderValue: string;
         reason: string | null;
       }[];
-    };
+    }
+  | { kind: "link"; label: string; url: string };
 
-interface CardData {
+/** Everything about one agenda item; embedded as JSON so it can be carried over and read by other tools. */
+export interface AgendaCard {
   id: string;
   title: string;
   section: string;
+  urgency?: "high" | "medium" | "low";
+  customers?: string[];
+  summary?: string;
+  proposal?: string;
   issues: string[];
+  /** Sub-points to tick off one by one. */
+  checklist?: { section: string; type: string; text: string }[];
   sources: Source[];
+  /** Added by hand to the HTML, so it only exists in the browser. */
+  manual?: boolean;
+  carriedFrom?: string;
+  lastNote?: string;
 }
 
 /**
@@ -69,7 +86,8 @@ export function renderAgenda(page: AgendaPage): string {
   const fmt = (d: Date) =>
     d.toLocaleString("en-US", { timeZone: page.timeZone, dateStyle: "medium", timeStyle: "short" });
   const created = page.items.flatMap((i) => i.issues.filter((x) => x.isNew)).length;
-  const data: CardData[] = [];
+  const data: AgendaCard[] = [];
+  const carried = renderCarried(page, data);
 
   const sections = (Object.keys(SECTIONS) as Section[])
     .map((section) => {
@@ -97,7 +115,7 @@ ${items.map((item) => renderItem(item, page.conversations, data)).join("\n")}</s
 <div class="toolbar"><div><span id="progress"></span>
   <button class="ghost" id="expand">Expand all</button><button class="ghost" id="collapse">Collapse all</button></div>
   <button id="copy">Copy decisions for parcerito</button></div>
-<main>${renderRejected(page, data)}
+<main>${renderLastNotes(page)}${carried}${renderRejected(page, data)}
 ${sections || "<section><h2>Customer chats</h2><p class=\"muted\">No issues from the service team in this window. 🎉</p></section>"}
 ${renderSkipped(page)}</main>
 <script type="application/json" id="agenda-data">${json({
@@ -110,15 +128,32 @@ ${renderSkipped(page)}</main>
 }
 
 /** A row that shows the title and expands to the details; the checkbox stays outside so ticking doesn't toggle. */
-function card(opts: CardData & { head: string; body: string }, data: CardData[]): string {
+function card(opts: AgendaCard & { head: string; body: string }, data: AgendaCard[]): string {
   const { head, body, ...item } = opts;
   data.push(item);
+  const checklist = item.checklist?.length ? renderChecklist(item.id, item.checklist) : "";
   return `<article class="item" data-id="${esc(item.id)}" data-title="${esc(item.title)}" data-issues="${esc(item.issues.join(","))}" data-refs="${esc(sourceRefs(item.sources))}">
   <input type="checkbox" class="done-box" title="Decided" aria-label="Decided">
   <details><summary>${head}</summary><div class="body">${body}
+  ${checklist}
   ${renderSources(item.sources)}
   <textarea placeholder="Decision / next step"></textarea></div></details>
 </article>`;
+}
+
+function renderChecklist(id: string, points: NonNullable<AgendaCard["checklist"]>): string {
+  const groups: string[] = [];
+  let current = "";
+  points.forEach((p, n) => {
+    if (p.section !== current) {
+      groups.push(`${current ? "</ul>" : ""}<p class="label">${esc(p.section)}</p><ul class="checklist">`);
+      current = p.section;
+    }
+    groups.push(
+      `<li><label><input type="checkbox" class="sub" data-key="${esc(`${id}-${n}`)}"> <span class="pt ${esc(p.type.toLowerCase())}">${esc(p.type)}</span> ${esc(p.text)}</label></li>`,
+    );
+  });
+  return `<p class="muted checklist-progress" data-for="${esc(id)}"></p>${groups.join("")}</ul>`;
 }
 
 function renderSources(sources: Source[]): string {
@@ -133,6 +168,9 @@ function renderSources(sources: Source[]): string {
       return `<div class="source"><p><span class="kind">Slack</span> <a href="${esc(s.url)}">#${esc(s.channel)}</a>
 <span class="muted">· channel ${esc(s.channelId)} · thread ${esc(s.threadTs)}</span></p><ul>${messages}</ul></div>`;
     }
+    if (s.kind === "link") {
+      return `<div class="source"><p><span class="kind db">Link</span> <a href="${esc(s.url)}">${esc(s.label)}</a></p></div>`;
+    }
     const rows = s.rows
       .map(
         (r) => `<li><span class="muted">${esc(r.decidedAt)} · ${esc(r.customer ?? "unknown customer")} · ${esc(r.form)} · <code>${esc(r.field)}</code> · ${esc(r.how)} · id <code>${esc(r.id)}</code></span>
@@ -142,7 +180,10 @@ function renderSources(sources: Source[]): string {
     return `<div class="source"><p><span class="kind db">DB</span> ${esc(s.database)} · <code>${esc(s.table)}</code>
 <span class="muted">· exported ${esc(s.exportedAt)}</span></p><ul>${rows}</ul></div>`;
   });
-  const count = sources.reduce((n, s) => n + (s.kind === "slack" ? s.messages.length : s.rows.length), 0);
+  const count = sources.reduce(
+    (n, s) => n + (s.kind === "slack" ? s.messages.length : s.kind === "db" ? s.rows.length : 1),
+    0,
+  );
   return `<details class="sources"><summary>Sources (${count})</summary>${blocks.join("")}</details>`;
 }
 
@@ -152,7 +193,9 @@ function sourceRefs(sources: Source[]): string {
     .map((s) =>
       s.kind === "slack"
         ? `slack #${s.channel} ${s.url}`
-        : `db ${s.table} ids ${s.rows.map((r) => r.id).join(",")}`,
+        : s.kind === "db"
+          ? `db ${s.table} ids ${s.rows.map((r) => r.id).join(",")}`
+          : `link ${s.url}`,
     )
     .join(" | ");
 }
@@ -180,19 +223,12 @@ function json(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
-function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, data: CardData[]): string {
+function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, data: AgendaCard[]): string {
   const sources = item.conversationIds
     .map((id) => conversations.get(id))
     .filter((c): c is Conversation => Boolean(c))
     .map(slackSource);
-  const issues = item.issues
-    .map(
-      (i) =>
-        `<a class="issue" href="${esc(i.url)}">${esc(i.identifier)}${i.isNew ? " <b>new</b>" : ""}</a> ${esc(i.title)}${
-          i.state ? ` <span class="muted">· ${esc(i.state)}</span>` : ""
-        }`,
-    )
-    .join("<br>");
+  const issues = issueLinks(item.issues);
   const tags = [
     ...item.customers.map((c) => `<span class="tag">${esc(c)}</span>`),
     ...item.issues.map((i) => `<span class="tag issue-tag">${esc(i.identifier)}${i.isNew ? " · new" : ""}</span>`),
@@ -203,6 +239,10 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, 
       id: item.id,
       title: item.title,
       section: SECTIONS[item.section],
+      urgency: item.urgency,
+      customers: item.customers,
+      summary: item.summary,
+      proposal: item.proposal,
       issues: item.issues.map((i) => i.identifier),
       sources,
       head: `<span class="urgency ${item.urgency}">${item.urgency}</span><span class="title">${esc(item.title)}</span><span class="tags">${tags}</span>`,
@@ -213,6 +253,51 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, 
     },
     data,
   );
+}
+
+function issueLinks(issues: (LinkedIssue & { isNew?: boolean })[]): string {
+  return issues
+    .map(
+      (i) =>
+        `<a class="issue" href="${esc(i.url)}">${esc(i.identifier)}${i.isNew ? " <b>new</b>" : ""}</a> ${esc(i.title)}${
+          i.state ? ` <span class="muted">· ${esc(i.state)}</span>` : ""
+        }`,
+    )
+    .join("<br>");
+}
+
+function renderCarried(page: AgendaPage, data: AgendaCard[]): string {
+  if (!page.carried.length) return "";
+  const cards = page.carried
+    .map(({ issueDetails, ...item }) => {
+      const tags = [
+        `<span class="tag carried-tag">from ${esc(item.carriedFrom)}</span>`,
+        ...(item.customers ?? []).map((c) => `<span class="tag">${esc(c)}</span>`),
+        ...issueDetails.map((i) => `<span class="tag issue-tag">${esc(i.identifier)}</span>`),
+      ].join("");
+      return card(
+        {
+          ...item,
+          issues: issueDetails.length ? issueDetails.map((i) => i.identifier) : item.issues,
+          head: `${item.urgency ? `<span class="urgency ${item.urgency}">${item.urgency}</span>` : ""}<span class="title">${esc(item.title)}</span><span class="tags">${tags}</span>`,
+          body: `${item.lastNote ? `<p class="last-note"><b>Last time:</b> ${esc(item.lastNote)}</p>` : ""}
+  ${item.summary ? `<p>${esc(item.summary)}</p>` : ""}
+  ${item.proposal ? `<p class="proposal"><b>Proposal:</b> ${esc(item.proposal)}</p>` : ""}
+  ${issueDetails.length ? `<p>${issueLinks(issueDetails)}</p>` : ""}`,
+        },
+        data,
+      );
+    })
+    .join("\n");
+  return `<section><h2>Carried over <span class="count">${page.carried.length}</span></h2>
+<p class="meta">Not decided at an earlier sync. Items whose Linear issues were closed since then are left out.</p>
+${cards}</section>`;
+}
+
+function renderLastNotes(page: AgendaPage): string {
+  if (!page.lastNotes) return "";
+  return `<section><details class="notes"><summary><h2>Notes from the last sync (${esc(page.lastNotes.date)})</h2></summary>
+<div class="quote notes-text">${esc(page.lastNotes.text)}</div></details></section>`;
 }
 
 function sourceLine(c: Conversation): string {
@@ -234,7 +319,7 @@ function renderSkipped(page: AgendaPage): string {
 <p class="muted">Messages the triage decided need no work. Check nothing important slipped through.</p><ul>${rows}</ul></details></section>`;
 }
 
-function renderRejected(page: AgendaPage, data: CardData[]): string {
+function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
   const { rejected } = page;
   if (!rejected) {
     return `<section><h2>Rejected AI suggestions</h2><p class="warning">No export from production yet. Run
@@ -272,6 +357,8 @@ function renderRejected(page: AgendaPage, data: CardData[]): string {
           id: `rejected-${i}`,
           title: p.title,
           section: "Rejected AI suggestions",
+          summary: p.finding,
+          proposal: p.proposal,
           issues: p.relatedIssue ? [p.relatedIssue] : [],
           sources: [dbSource(p.fieldKeys)],
           head: `<span class="title">${esc(p.title)}</span><span class="tags">${p.fieldKeys
@@ -346,6 +433,13 @@ details.sources{margin:10px 0 4px;font-size:13px}details.sources>summary{cursor:
 .source li{margin:6px 0}.quote{white-space:pre-wrap;color:var(--ink);margin-top:2px}
 .kind{font-size:10px;text-transform:uppercase;letter-spacing:.04em;background:#e8e3f8;color:#4a2f9a;border-radius:4px;padding:1px 6px}
 .kind.db{background:#dff1f0;color:#0d5c58}
+.checklist{list-style:none;padding-left:0!important}.checklist li{margin:3px 0}.checklist label{cursor:pointer}
+.checklist label:has(input:checked){color:var(--muted);text-decoration:line-through}
+.pt{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border-radius:4px;padding:1px 5px;margin-right:2px;background:var(--tag);color:var(--muted)}
+.pt.prompt{background:#e8e3f8;color:#4a2f9a}.pt.warning{background:#fdf0d5;color:#7a4d00}.pt.layout{background:#dff1f0;color:#0d5c58}
+.pt.ok{background:#e6efe3;color:#2f5a25}.pt.open{background:#fde2e1;color:#8a1c17}
+.carried-tag{color:#7a4d00;background:#fdf0d5}.last-note{background:var(--tag);border-radius:6px;padding:6px 10px}
+details.notes>summary{cursor:pointer}.notes-text{font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
 textarea{width:100%;min-height:48px;margin-top:8px;border:1px solid var(--line);border-radius:6px;padding:8px;background:transparent;color:inherit;font:inherit;font-size:14px}
 details.table,details.skipped{margin:10px 0}details.table>summary,details.skipped>summary{cursor:pointer;color:var(--muted);font-size:13px}
 details.skipped>summary h2{color:var(--ink)}details.skipped li{margin:6px 0}
@@ -354,8 +448,10 @@ th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);pad
 `;
 
 const SCRIPT = `
-const key = "agenda:" + document.body.dataset.agenda;
+const agenda = document.body.dataset.agenda;
+const key = "agenda:" + agenda;
 const state = JSON.parse(localStorage.getItem(key) || "{}");
+const cards = new Map(JSON.parse(document.getElementById("agenda-data").textContent).items.map((c) => [c.id, c]));
 const items = [...document.querySelectorAll(".item")];
 const progress = () => {
   document.getElementById("progress").textContent =
@@ -373,16 +469,47 @@ for (const item of items) {
   box.addEventListener("change", save); note.addEventListener("input", save);
 }
 progress();
+
+// Checklist points inside an item.
+const subKey = key + ":checklist";
+const subState = JSON.parse(localStorage.getItem(subKey) || "{}");
+const subProgress = () => document.querySelectorAll(".checklist-progress").forEach((el) => {
+  const boxes = [...document.querySelectorAll('.item[data-id="' + el.dataset.for + '"] input.sub')];
+  el.textContent = boxes.filter((b) => b.checked).length + " / " + boxes.length + " points discussed";
+});
+for (const b of document.querySelectorAll("input.sub")) {
+  b.checked = !!subState[b.dataset.key];
+  b.addEventListener("change", () => { subState[b.dataset.key] = b.checked; localStorage.setItem(subKey, JSON.stringify(subState)); subProgress(); });
+}
+subProgress();
+
 const toggleAll = (open) => document.querySelectorAll(".item details").forEach((d) => (d.open = open));
 document.getElementById("expand").addEventListener("click", () => toggleAll(true));
 document.getElementById("collapse").addEventListener("click", () => toggleAll(false));
+
+const base64 = (text) => {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+};
+// Keeps the pasted message small: sources keep their links, long message texts are cut.
+const slim = (card) => ({ ...card, sources: (card.sources || []).map((s) => s.kind === "slack"
+  ? { ...s, messages: s.messages.map((m) => ({ ...m, text: m.text.slice(0, 300) })) }
+  : s.kind === "db" ? { ...s, rows: s.rows.slice(0, 20) } : s) });
 document.getElementById("copy").addEventListener("click", async () => {
-  const lines = items
-    .filter((i) => state[i.dataset.id]?.decided || state[i.dataset.id]?.note)
-    .map((i) => "- " + i.dataset.title + " [" + (i.dataset.issues || "no issue") + "]" +
-      (state[i.dataset.id].decided ? " ✅" : "") + ": " + (state[i.dataset.id].note || "(no notes)") +
-      (i.dataset.refs ? "\\n  sources: " + i.dataset.refs : ""));
-  await navigator.clipboard.writeText("Decisions from the Nico sync " + document.body.dataset.agenda + ":\\n" + lines.join("\\n"));
+  const entry = (i) => ({ id: i.dataset.id, note: state[i.dataset.id]?.note || "" });
+  const decided = items.filter((i) => state[i.dataset.id]?.decided);
+  const open = items.filter((i) => !state[i.dataset.id]?.decided);
+  const line = (i) => "- " + i.dataset.title + " [" + (i.dataset.issues || "no issue") + "]: " +
+    (state[i.dataset.id]?.note || "(no notes)") + (i.dataset.refs ? "\\n  sources: " + i.dataset.refs : "");
+  const payload = { v: 1, agenda, decided: decided.map(entry), open: open.map(entry),
+    cards: open.map((i) => cards.get(i.dataset.id)).filter(Boolean).map(slim) };
+  const text = "Decisions from the Nico sync " + agenda + "\\n\\nDecided (" + decided.length + "):\\n" +
+    decided.map(line).join("\\n") + "\\n\\nNot decided, carry over to the next sync (" + open.length + "):\\n" +
+    open.map((i) => "- " + i.dataset.title + (state[i.dataset.id]?.note ? ": " + state[i.dataset.id].note : "")).join("\\n") +
+    "\\n\\n\\u0060\\u0060\\u0060parcerito-sync\\n" + base64(JSON.stringify(payload)) + "\\n\\u0060\\u0060\\u0060";
+  await navigator.clipboard.writeText(text);
   const button = document.getElementById("copy"); button.textContent = "Copied ✓";
   setTimeout(() => (button.textContent = "Copy decisions for parcerito"), 1500);
 });

@@ -141,6 +141,8 @@ export async function triageConversations(
     trackedIn: Map<string, LinkedIssue[]>;
     /** Rejected AI suggestions from production, already summarized (see describeRejected). */
     rejected?: string;
+    /** Notes from the previous sync with Nico (e.g. a Granola summary). */
+    lastNotes?: string;
     since: Date;
     until: Date;
   },
@@ -206,6 +208,14 @@ ${input.rejected}
     : "There's no rejected-suggestions export today: return an empty rejectedPatterns."
 }
 
+${
+  input.lastNotes
+    ? `Notes from the previous sync with Nico, for context. If a conversation relates to something they agreed,
+mention it in the summary or proposal (e.g. "you agreed to …"):
+${input.lastNotes}
+`
+    : ""
+}
 Conversations:
 ${JSON.stringify(payload, null, 1)}
 `.trim();
