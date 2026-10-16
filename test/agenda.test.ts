@@ -90,6 +90,11 @@ test("agenda HTML escapes Slack text", () => {
   assert.ok(!html.includes("<script>alert"));
   assert.ok(html.includes("ENG-9 <b>new</b>"));
   assert.ok(html.includes('data-title="M1400 omitted"'));
+  const data = JSON.parse(html.match(/<script type="application\/json" id="agenda-data">(.*?)<\/script>/s)![1]!);
+  assert.equal(data.items[0].sources[0].kind, "slack");
+  assert.equal(data.items[0].sources[0].channelId, "C1");
+  // Slack text with </script> must not break out of the JSON block.
+  assert.equal(data.items[0].sources[0].messages[0].text, "<script>alert(1)</script> M1400 is empty");
 });
 
 test("groups rejected suggestions by form and field, most rejected first", () => {

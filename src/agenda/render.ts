@@ -25,6 +25,42 @@ export interface AgendaPage {
 
 const URGENCY_ORDER = { high: 0, medium: 1, low: 2 } as const;
 
+/** Where an agenda item comes from, shown in its "Sources" accordion and embedded as JSON for other tools. */
+type Source =
+  | {
+      kind: "slack";
+      channel: string;
+      channelId: string;
+      threadTs: string;
+      url: string;
+      messages: { author: string; from: string; at: string; text: string; url: string }[];
+    }
+  | {
+      kind: "db";
+      database: string;
+      table: string;
+      exportedAt: string;
+      rows: {
+        id: string;
+        decidedAt: string;
+        customer: string | null;
+        form: string;
+        field: string;
+        how: string;
+        aiValue: string;
+        coderValue: string;
+        reason: string | null;
+      }[];
+    };
+
+interface CardData {
+  id: string;
+  title: string;
+  section: string;
+  issues: string[];
+  sources: Source[];
+}
+
 /**
  * One self-contained HTML file: a compact list of titles that expand on click. Decisions and notes are kept in
  * the browser's localStorage, keyed by the agenda date.
@@ -33,6 +69,7 @@ export function renderAgenda(page: AgendaPage): string {
   const fmt = (d: Date) =>
     d.toLocaleString("en-US", { timeZone: page.timeZone, dateStyle: "medium", timeStyle: "short" });
   const created = page.items.flatMap((i) => i.issues.filter((x) => x.isNew)).length;
+  const data: CardData[] = [];
 
   const sections = (Object.keys(SECTIONS) as Section[])
     .map((section) => {
@@ -41,7 +78,7 @@ export function renderAgenda(page: AgendaPage): string {
         .sort((a, b) => URGENCY_ORDER[a.urgency] - URGENCY_ORDER[b.urgency]);
       if (!items.length) return "";
       return `<section><h2>${esc(SECTIONS[section])} <span class="count">${items.length}</span></h2>
-${items.map((item) => renderItem(item, page.conversations)).join("\n")}</section>`;
+${items.map((item) => renderItem(item, page.conversations, data)).join("\n")}</section>`;
     })
     .join("\n");
 
@@ -60,28 +97,94 @@ ${items.map((item) => renderItem(item, page.conversations)).join("\n")}</section
 <div class="toolbar"><div><span id="progress"></span>
   <button class="ghost" id="expand">Expand all</button><button class="ghost" id="collapse">Collapse all</button></div>
   <button id="copy">Copy decisions for parcerito</button></div>
-<main>${renderRejected(page)}
+<main>${renderRejected(page, data)}
 ${sections || "<section><h2>Customer chats</h2><p class=\"muted\">No issues from the service team in this window. 🎉</p></section>"}
 ${renderSkipped(page)}</main>
+<script type="application/json" id="agenda-data">${json({
+    agenda: page.date,
+    window: { since: page.since.toISOString(), until: page.until.toISOString() },
+    items: data,
+  })}</script>
 <script>${SCRIPT}</script>
 </body></html>`;
 }
 
 /** A row that shows the title and expands to the details; the checkbox stays outside so ticking doesn't toggle. */
-function card(opts: { id: string; title: string; issues: string; head: string; body: string }): string {
-  return `<article class="item" data-id="${esc(opts.id)}" data-title="${esc(opts.title)}" data-issues="${esc(opts.issues)}">
+function card(opts: CardData & { head: string; body: string }, data: CardData[]): string {
+  const { head, body, ...item } = opts;
+  data.push(item);
+  return `<article class="item" data-id="${esc(item.id)}" data-title="${esc(item.title)}" data-issues="${esc(item.issues.join(","))}" data-refs="${esc(sourceRefs(item.sources))}">
   <input type="checkbox" class="done-box" title="Decided" aria-label="Decided">
-  <details><summary>${opts.head}</summary><div class="body">${opts.body}
+  <details><summary>${head}</summary><div class="body">${body}
+  ${renderSources(item.sources)}
   <textarea placeholder="Decision / next step"></textarea></div></details>
 </article>`;
 }
 
-function renderItem(item: AgendaItem, conversations: Map<string, Conversation>): string {
+function renderSources(sources: Source[]): string {
+  const blocks = sources.map((s) => {
+    if (s.kind === "slack") {
+      const messages = s.messages
+        .map(
+          (m) => `<li><span class="muted">${esc(m.at)} · ${esc(m.author)} (${esc(m.from)}) · <a href="${esc(m.url)}">link</a></span>
+<div class="quote">${esc(m.text)}</div></li>`,
+        )
+        .join("");
+      return `<div class="source"><p><span class="kind">Slack</span> <a href="${esc(s.url)}">#${esc(s.channel)}</a>
+<span class="muted">· channel ${esc(s.channelId)} · thread ${esc(s.threadTs)}</span></p><ul>${messages}</ul></div>`;
+    }
+    const rows = s.rows
+      .map(
+        (r) => `<li><span class="muted">${esc(r.decidedAt)} · ${esc(r.customer ?? "unknown customer")} · ${esc(r.form)} · <code>${esc(r.field)}</code> · ${esc(r.how)} · id <code>${esc(r.id)}</code></span>
+<div class="quote">AI <code>${esc(r.aiValue)}</code> → coder <code>${esc(r.coderValue)}</code>${r.reason ? ` · “${esc(r.reason)}”` : ""}</div></li>`,
+      )
+      .join("");
+    return `<div class="source"><p><span class="kind db">DB</span> ${esc(s.database)} · <code>${esc(s.table)}</code>
+<span class="muted">· exported ${esc(s.exportedAt)}</span></p><ul>${rows}</ul></div>`;
+  });
+  const count = sources.reduce((n, s) => n + (s.kind === "slack" ? s.messages.length : s.rows.length), 0);
+  return `<details class="sources"><summary>Sources (${count})</summary>${blocks.join("")}</details>`;
+}
+
+/** One-line references for the copied decisions, so another tool can find the originals. */
+function sourceRefs(sources: Source[]): string {
+  return sources
+    .map((s) =>
+      s.kind === "slack"
+        ? `slack #${s.channel} ${s.url}`
+        : `db ${s.table} ids ${s.rows.map((r) => r.id).join(",")}`,
+    )
+    .join(" | ");
+}
+
+function slackSource(c: Conversation): Source {
+  return {
+    kind: "slack",
+    channel: c.channelName,
+    channelId: c.channelId,
+    threadTs: c.rootTs,
+    url: c.url,
+    // The new service-team messages, plus the rest of the thread for context when it's short.
+    messages: (c.messages.length <= 8 ? c.messages : c.messages.filter((m) => m.external && m.inWindow)).map((m) => ({
+      author: m.author,
+      from: m.external ? "service team" : m.author === "bot" ? "bot" : "internal",
+      at: new Date(Number(m.ts) * 1000).toISOString(),
+      text: m.text,
+      url: m.url,
+    })),
+  };
+}
+
+function json(value: unknown): string {
+  // Safe inside a <script> element.
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, data: CardData[]): string {
   const sources = item.conversationIds
     .map((id) => conversations.get(id))
     .filter((c): c is Conversation => Boolean(c))
-    .map((c) => `<li>${sourceLine(c)}</li>`)
-    .join("");
+    .map(slackSource);
   const issues = item.issues
     .map(
       (i) =>
@@ -95,17 +198,21 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>):
     ...item.issues.map((i) => `<span class="tag issue-tag">${esc(i.identifier)}${i.isNew ? " · new" : ""}</span>`),
   ].join("");
 
-  return card({
-    id: item.id,
-    title: item.title,
-    issues: item.issues.map((i) => i.identifier).join(","),
-    head: `<span class="urgency ${item.urgency}">${item.urgency}</span><span class="title">${esc(item.title)}</span><span class="tags">${tags}</span>`,
+  return card(
+    {
+      id: item.id,
+      title: item.title,
+      section: SECTIONS[item.section],
+      issues: item.issues.map((i) => i.identifier),
+      sources,
+      head: `<span class="urgency ${item.urgency}">${item.urgency}</span><span class="title">${esc(item.title)}</span><span class="tags">${tags}</span>`,
     body: `<p>${esc(item.summary)}</p>
   <p class="proposal"><b>Proposal:</b> ${esc(item.proposal)}</p>
   <p>${issues || `<span class="muted">${esc(item.linearNote ?? "No Linear issue")}</span>`}</p>
-  ${item.linearNote && item.issues.length ? `<p class="muted">${esc(item.linearNote)}</p>` : ""}
-  <p class="label">Messages</p><ul>${sources}</ul>`,
-  });
+  ${item.linearNote && item.issues.length ? `<p class="muted">${esc(item.linearNote)}</p>` : ""}`,
+    },
+    data,
+  );
 }
 
 function sourceLine(c: Conversation): string {
@@ -127,7 +234,7 @@ function renderSkipped(page: AgendaPage): string {
 <p class="muted">Messages the triage decided need no work. Check nothing important slipped through.</p><ul>${rows}</ul></details></section>`;
 }
 
-function renderRejected(page: AgendaPage): string {
+function renderRejected(page: AgendaPage, data: CardData[]): string {
   const { rejected } = page;
   if (!rejected) {
     return `<section><h2>Rejected AI suggestions</h2><p class="warning">No export from production yet. Run
@@ -138,20 +245,45 @@ function renderRejected(page: AgendaPage): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+  const dbSource = (fieldKeys: string[]): Source => ({
+    kind: "db",
+    database: "Lime production (prod_db)",
+    table: "ai_recommendation",
+    exportedAt: rejected.exportedAt.toISOString(),
+    rows: rejected.groups
+      .filter((g) => fieldKeys.includes(g.fieldKey))
+      .flatMap((g) => g.rows)
+      .map((r) => ({
+        id: r.id,
+        decidedAt: r.decided_at,
+        customer: r.organization,
+        form: r.form,
+        field: r.field_key,
+        how: r.rejected_via === "review" ? "rejected" : "overwritten",
+        aiValue: short(r.ai_value, 300),
+        coderValue: short(r.coder_value, 300),
+        reason: r.reason,
+      })),
+  });
   const patterns = page.rejectedPatterns
     .map((p, i) =>
-      card({
-        id: `rejected-${i}`,
-        title: p.title,
-        issues: p.relatedIssue ?? "",
-        head: `<span class="title">${esc(p.title)}</span><span class="tags">${p.fieldKeys
+      card(
+        {
+          id: `rejected-${i}`,
+          title: p.title,
+          section: "Rejected AI suggestions",
+          issues: p.relatedIssue ? [p.relatedIssue] : [],
+          sources: [dbSource(p.fieldKeys)],
+          head: `<span class="title">${esc(p.title)}</span><span class="tags">${p.fieldKeys
           .slice(0, 4)
           .map((k) => `<span class="tag">${esc(k)}</span>`)
           .join("")}${p.fieldKeys.length > 4 ? `<span class="tag">+${p.fieldKeys.length - 4}</span>` : ""}</span>`,
-        body: `<p>${esc(p.finding)}</p>
+          body: `<p>${esc(p.finding)}</p>
   <p class="proposal"><b>Proposal:</b> ${esc(p.proposal)}</p>
   ${p.relatedIssue ? `<p class="muted">Related: ${esc(p.relatedIssue)}</p>` : ""}`,
-      }),
+        },
+        data,
+      ),
     )
     .join("\n");
   const rows = rejected.groups
@@ -209,6 +341,11 @@ button.ghost{background:transparent;color:var(--muted);border:1px solid var(--li
 .proposal{border-left:3px solid var(--accent);padding-left:10px}
 .issue{font-weight:600;color:var(--accent)}.issue b{font-size:10px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:4px}
 a{color:var(--accent)}
+details.sources{margin:10px 0 4px;font-size:13px}details.sources>summary{cursor:pointer;color:var(--muted)}
+.source{border-left:2px solid var(--line);padding:2px 0 2px 10px;margin:8px 0}.source p{margin:2px 0}.source ul{list-style:none;padding:0}
+.source li{margin:6px 0}.quote{white-space:pre-wrap;color:var(--ink);margin-top:2px}
+.kind{font-size:10px;text-transform:uppercase;letter-spacing:.04em;background:#e8e3f8;color:#4a2f9a;border-radius:4px;padding:1px 6px}
+.kind.db{background:#dff1f0;color:#0d5c58}
 textarea{width:100%;min-height:48px;margin-top:8px;border:1px solid var(--line);border-radius:6px;padding:8px;background:transparent;color:inherit;font:inherit;font-size:14px}
 details.table,details.skipped{margin:10px 0}details.table>summary,details.skipped>summary{cursor:pointer;color:var(--muted);font-size:13px}
 details.skipped>summary h2{color:var(--ink)}details.skipped li{margin:6px 0}
@@ -243,7 +380,8 @@ document.getElementById("copy").addEventListener("click", async () => {
   const lines = items
     .filter((i) => state[i.dataset.id]?.decided || state[i.dataset.id]?.note)
     .map((i) => "- " + i.dataset.title + " [" + (i.dataset.issues || "no issue") + "]" +
-      (state[i.dataset.id].decided ? " ✅" : "") + ": " + (state[i.dataset.id].note || "(no notes)"));
+      (state[i.dataset.id].decided ? " ✅" : "") + ": " + (state[i.dataset.id].note || "(no notes)") +
+      (i.dataset.refs ? "\\n  sources: " + i.dataset.refs : ""));
   await navigator.clipboard.writeText("Decisions from the Nico sync " + document.body.dataset.agenda + ":\\n" + lines.join("\\n"));
   const button = document.getElementById("copy"); button.textContent = "Copied ✓";
   setTimeout(() => (button.textContent = "Copy decisions for parcerito"), 1500);
