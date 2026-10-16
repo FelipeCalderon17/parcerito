@@ -183,7 +183,8 @@ Turn the issues into agenda items:
 
 Linear (team ${config.LINEAR_TEAM_KEY}). Every agenda item must end up tracked in an issue:
 - If every conversation in the item has alreadyTrackedIn entries, use action "tracked".
-- Otherwise search Linear (read-only tools) for an open issue about the same problem. If one clearly matches,
+- Otherwise search Linear (read-only tools, every team, not just ${config.LINEAR_TEAM_KEY}) for an open issue about
+  the same problem. If one clearly matches,
   use "existing" with its identifier; the messages will be attached to it as a comment.
 - Otherwise use "create" with a title and a markdown description in Dotterino's style: Report, Scope and
   evidence, Required validation. State what is reported vs. confirmed, no patient details, no speculation as fact.

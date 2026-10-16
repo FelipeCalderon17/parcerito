@@ -33,7 +33,7 @@ export class LinearClient {
 
   /**
    * Which Slack messages are already tracked. Dotterino (and we) cite the source message's timestamp in the
-   * issue description or a comment, so we map every timestamp cited since `since` to its issues.
+   * issue description or a comment, so we map every timestamp cited since `since` to its issues, in any team.
    */
   async trackedSlackMessages(since: Date): Promise<Map<string, LinkedIssue[]>> {
     const tracked = new Map<string, LinkedIssue[]>();
@@ -48,10 +48,10 @@ export class LinearClient {
     const issueFields = "identifier title url description state { name }";
     for await (const issue of this.paginate<RawIssue>(
       "issues",
-      `issues(first: 100, after: $after, filter: { team: { key: { eq: $team } }, updatedAt: { gte: $since } }) {
+      `issues(first: 100, after: $after, filter: { updatedAt: { gte: $since } }) {
         nodes { ${issueFields} } pageInfo { hasNextPage endCursor } }`,
-      { team: this.teamKey, since: since.toISOString() },
-      "$team: String!, $since: DateTimeOrDuration!",
+      { since: since.toISOString() },
+      "$since: DateTimeOrDuration!",
     )) {
       add(issue.description, issue);
     }
