@@ -26,11 +26,15 @@ async function main() {
     .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))[0];
   if (!latest) throw new Error("No agenda in your DM yet. DM the bot `agenda` to build one.");
 
-  const res = await fetch(latest.url_private_download!, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`Couldn't download ${latest.name}: ${res.status}`);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, latest.name!);
-  fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  // A local copy changed after the bot posted it (e.g. items added by hand) wins over the Slack one.
+  const localIsNewer = fs.existsSync(file) && fs.statSync(file).mtimeMs / 1000 > (latest.created ?? 0);
+  if (!localIsNewer) {
+    const res = await fetch(latest.url_private_download!, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`Couldn't download ${latest.name}: ${res.status}`);
+    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  }
 
   console.log(`file://${file}`);
   execFile("open", [file]);
