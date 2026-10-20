@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { App, LogLevel } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
 import path from "node:path";
+import { IssueAcknowledger } from "./agenda/ack.js";
 import { DailyAgenda } from "./agenda/index.js";
 import { parseDecisionsText, parseSync, readTextFiles, withoutSyncBlock } from "./agenda/sync.js";
 import { Orchestrator } from "./agent.js";
@@ -34,6 +35,7 @@ const STOP_WORDS = /^(stop|para|pare|cancel|cancela)[.!]*$/i;
 // "agenda", "agenda bro", "agenda pls"…: short messages that start with the word.
 const AGENDA_COMMAND = /^agenda\b.{0,20}$/i;
 const agenda = new DailyAgenda(config, app.client);
+const acknowledger = new IssueAcknowledger(config, app.client, () => botUserId);
 
 interface IncomingMessage {
   user: string;
@@ -241,6 +243,7 @@ app.event("app_mention", async ({ event, client }) => {
 });
 
 // DMs only. In channels the bot answers only when @mentioned (app_mention above), even in threads it's working in.
+// The exception is the agenda channels, where service-team issues get a "noted" reply (see IssueAcknowledger).
 app.message(async ({ message, client }) => {
   // Plain messages, plus messages with attachments (screenshots, logs).
   if ((message.subtype !== undefined && message.subtype !== "file_share") || !("user" in message) || !message.user) return;
@@ -248,7 +251,14 @@ app.message(async ({ message, client }) => {
   const text = message.text ?? "";
   const isDm = message.channel_type === "im";
   const threadTs = "thread_ts" in message ? message.thread_ts : undefined;
-  if (!isDm) return;
+  if (!isDm) {
+    if (!text.includes(`<@${botUserId}>`)) {
+      acknowledger
+        .onMessage({ channel: message.channel, user: message.user, ts: message.ts, threadTs })
+        .catch((error) => console.error("[ack] couldn't check message", error));
+    }
+    return;
+  }
   const files = slackFiles("files" in message ? message.files : undefined);
   await handle(client, { user: message.user, text, channel: message.channel, ts: message.ts, threadTs, files });
 });

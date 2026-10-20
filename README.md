@@ -58,6 +58,7 @@ parcerito (Node + TypeScript, one Docker container)
   step on each other. Follow-ups in the thread (with an `@parcerito` mention) continue the same Claude session and the same Codex conversation.
 - **Thread context.** Mention it inside an existing thread (a Sentry alert, a bug report) and it reads the thread first.
 - **Only answers when mentioned.** In channels it ignores thread replies that don't tag it. DMs don't need a mention.
+- **Acknowledges prompt and form issues in the agenda channels.** When someone outside the team posts in one of `AGENDA_CHANNELS`, it waits for the thread to go quiet for 3 minutes and classifies it as a prompt/form issue, another issue, or not an issue. Only prompt/form issues get a one-time reply in the thread saying it's on your plate. It stays out of threads anyone on the team (or it) already answered. Linear is still handled by the daily agenda.
 - **Say `@parcerito stop`** in the thread to cancel the current run.
 
 ## Setup
