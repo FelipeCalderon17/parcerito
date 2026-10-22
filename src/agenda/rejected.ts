@@ -13,6 +13,29 @@ export interface RejectedField {
   reason: string | null;
   ai_value: unknown;
   coder_value: unknown;
+  /** The trace, in exports from 2026-10-22 on (older ones lack these). */
+  decided_by?: string | null;
+  decided_by_email?: string | null;
+  visit_date?: string | null;
+  task_name?: string | null;
+  ai_basis?: string | null;
+  app_link?: string | null;
+  model?: string | null;
+  /** The field's line in the FIELDS block of the prompt that was sent. */
+  prompt_field_line?: string | null;
+  /** The INSTRUCTIONS entry that line points to. */
+  prompt_instruction?: string | null;
+  evidence?: RejectedEvidence[];
+}
+
+/** One snippet the AI cited for its value. */
+export interface RejectedEvidence {
+  type: string;
+  document: string | null;
+  page: number | null;
+  speaker: string | null;
+  at: string | null;
+  snippet: string | null;
 }
 
 export interface RejectedGroup {
@@ -78,8 +101,11 @@ export function describeRejected(groups: RejectedGroup[]): string {
         .slice(0, 5)
         .map(
           (r) =>
-            `  - ${r.organization ?? "unknown org"}, ${r.rejected_via === "review" ? "rejected" : "overwritten"}: ` +
-            `AI ${short(r.ai_value)} → coder ${short(r.coder_value)}${r.reason ? `; reason: ${r.reason}` : ""}`,
+            `  - ${r.organization ?? "unknown org"}, ${r.rejected_via === "review" ? "rejected" : "overwritten"}` +
+            `${r.decided_by ? ` by ${r.decided_by}` : ""}: ` +
+            `AI ${short(r.ai_value)} → coder ${short(r.coder_value)}${r.reason ? `; reason: ${r.reason}` : ""}` +
+            (r.prompt_instruction ? `\n    instruction: ${short(r.prompt_instruction, 300)}` : "") +
+            (r.evidence?.length ? `\n    evidence: ${r.evidence.map((e) => short(e.snippet, 120)).join(" | ")}` : ""),
         )
         .join("\n");
       return `${g.form} · ${g.fieldKey} (${g.fieldLabel}): ${g.rows.length}×\n${examples}`;

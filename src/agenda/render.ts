@@ -1,6 +1,6 @@
 import type { Conversation } from "./collect.js";
 import type { LinkedIssue } from "./linear.js";
-import { short, type RejectedExport } from "./rejected.js";
+import { short, type RejectedEvidence, type RejectedExport, type RejectedField } from "./rejected.js";
 import type { CarriedCard } from "./sync.js";
 import { SECTIONS, type RejectedPattern, type Section, type SkippedConversation, type TriageItem } from "./triage.js";
 
@@ -55,6 +55,14 @@ export type Source =
         aiValue: string;
         coderValue: string;
         reason: string | null;
+        decidedBy?: string | null;
+        visitDate?: string | null;
+        appLink?: string | null;
+        basis?: string | null;
+        model?: string | null;
+        promptLine?: string | null;
+        instruction?: string | null;
+        evidence?: RejectedEvidence[];
       }[];
     }
   | { kind: "link"; label: string; url: string };
@@ -69,6 +77,10 @@ export interface AgendaCard {
   summary?: string;
   proposal?: string;
   issues: string[];
+  /** When it happened (YYYY-MM-DD, or a range), shown on the card itself. */
+  date?: string;
+  /** Who's behind it, e.g. "Feedback from" the service team or "Rejected by" coders. */
+  people?: { label: string; names: string[] }[];
   /** Sub-points to tick off one by one. */
   checklist?: { section: string; type: string; text: string }[];
   sources: Source[];
@@ -132,9 +144,14 @@ function card(opts: AgendaCard & { head: string; body: string }, data: AgendaCar
   const { head, body, ...item } = opts;
   data.push(item);
   const checklist = item.checklist?.length ? renderChecklist(item.id, item.checklist) : "";
+  const people = (item.people ?? [])
+    .filter((p) => p.names.length)
+    .map((p) => `<span><b>${esc(p.label)}:</b> ${esc(p.names.join(", "))}</span>`)
+    .join("");
   return `<article class="item" data-id="${esc(item.id)}" data-title="${esc(item.title)}" data-issues="${esc(item.issues.join(","))}" data-refs="${esc(sourceRefs(item.sources))}">
   <input type="checkbox" class="done-box" title="Decided" aria-label="Decided">
-  <details><summary>${head}</summary><div class="body">${body}
+  <details><summary>${head}${item.date ? `<span class="date">${esc(item.date)}</span>` : ""}</summary><div class="body">
+  ${people ? `<p class="people">${people}</p>` : ""}${body}
   ${checklist}
   ${renderSources(item.sources)}
   <textarea placeholder="Decision / next step"></textarea></div></details>
@@ -171,12 +188,7 @@ function renderSources(sources: Source[]): string {
     if (s.kind === "link") {
       return `<div class="source"><p><span class="kind db">Link</span> <a href="${esc(s.url)}">${esc(s.label)}</a></p></div>`;
     }
-    const rows = s.rows
-      .map(
-        (r) => `<li><span class="muted">${esc(r.decidedAt)} · ${esc(r.customer ?? "unknown customer")} · ${esc(r.form)} · <code>${esc(r.field)}</code> · ${esc(r.how)} · id <code>${esc(r.id)}</code></span>
-<div class="quote">AI <code>${esc(r.aiValue)}</code> → coder <code>${esc(r.coderValue)}</code>${r.reason ? ` · “${esc(r.reason)}”` : ""}</div></li>`,
-      )
-      .join("");
+    const rows = s.rows.map(dbRow).join("");
     return `<div class="source"><p><span class="kind db">DB</span> ${esc(s.database)} · <code>${esc(s.table)}</code>
 <span class="muted">· exported ${esc(s.exportedAt)}</span></p><ul>${rows}</ul></div>`;
   });
@@ -185,6 +197,61 @@ function renderSources(sources: Source[]): string {
     0,
   );
   return `<details class="sources"><summary>Sources (${count})</summary>${blocks.join("")}</details>`;
+}
+
+/** One rejected suggestion with its trace: what the prompt asked, what the AI cited, what it answered. */
+function dbRow(r: Extract<Source, { kind: "db" }>["rows"][number]): string {
+  const head = [
+    esc(r.decidedAt.slice(0, 10)),
+    esc(r.customer ?? "unknown customer"),
+    esc(r.form),
+    `<code>${esc(r.field)}</code>`,
+    `${esc(r.how)}${r.decidedBy ? ` by <b>${esc(r.decidedBy)}</b>` : ""}`,
+    r.visitDate ? `visit ${esc(r.visitDate.slice(0, 10))}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const prompt =
+    r.promptLine || r.instruction
+      ? `<p class="label">Prompt</p>${r.promptLine ? `<div class="quote"><code>${esc(r.promptLine)}</code></div>` : ""}${
+          r.instruction ? `<div class="quote">${esc(r.instruction)}</div>` : ""
+        }`
+      : "";
+  const evidence = r.evidence
+    ? `<p class="label">Evidence (${r.evidence.length})</p>${
+        r.evidence.length
+          ? `<ul class="evidence">${r.evidence
+              .map((e) => {
+                const where = [
+                  e.type,
+                  e.document,
+                  e.page != null ? `p. ${e.page}` : "",
+                  e.speaker ? `speaker ${e.speaker}` : "",
+                  e.type === "transcript" && e.at ? e.at : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
+                return `<li><span class="muted">${esc(where)}</span><div class="quote">${esc(e.snippet ?? "(no snippet)")}</div></li>`;
+              })
+              .join("")}</ul>`
+          : `<p class="muted">The AI cited nothing.</p>`
+      }`
+    : "";
+  return `<li class="trace"><p class="muted">${head}${r.appLink ? ` · <a href="${esc(r.appLink)}">open in Lime</a>` : ""} · id <code>${esc(r.id)}</code></p>
+${prompt}${evidence}
+<p class="label">AI answer${r.basis ? ` <span class="muted">(${esc(r.basis)}${r.model ? `, ${esc(r.model)}` : ""})</span>` : ""}</p>
+<div class="quote">AI <code>${esc(r.aiValue)}</code> → coder <code>${esc(r.coderValue)}</code>${r.reason ? `<br>Reason: “${esc(r.reason)}”` : ""}</div></li>`;
+}
+
+/** Earliest and latest day, as one date or a range. */
+function dateSpan(dates: string[]): string | undefined {
+  const days = dates.map((d) => d.slice(0, 10)).sort();
+  if (!days.length) return undefined;
+  return days[0] === days.at(-1) ? days[0] : `${days[0]} → ${days.at(-1)}`;
+}
+
+function unique(values: (string | null | undefined)[]): string[] {
+  return [...new Set(values.filter((v): v is string => Boolean(v)))];
 }
 
 /** One-line references for the copied decisions, so another tool can find the originals. */
@@ -229,6 +296,8 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, 
     .filter((c): c is Conversation => Boolean(c))
     .map(slackSource);
   const issues = issueLinks(item.issues);
+  const messages = item.conversationIds.flatMap((id) => conversations.get(id)?.messages ?? []);
+  const feedback = messages.filter((m) => m.external && m.inWindow);
   const tags = [
     ...item.customers.map((c) => `<span class="tag">${esc(c)}</span>`),
     ...item.issues.map((i) => `<span class="tag issue-tag">${esc(i.identifier)}${i.isNew ? " · new" : ""}</span>`),
@@ -244,6 +313,11 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, 
       summary: item.summary,
       proposal: item.proposal,
       issues: item.issues.map((i) => i.identifier),
+      date: dateSpan((feedback.length ? feedback : messages).map((m) => new Date(Number(m.ts) * 1000).toISOString())),
+      people: [
+        { label: "Feedback from", names: unique(feedback.map((m) => m.author)) },
+        { label: "Replied", names: unique(messages.filter((m) => !m.external).map((m) => m.author)) },
+      ],
       sources,
       head: `<span class="urgency ${item.urgency}">${item.urgency}</span><span class="title">${esc(item.title)}</span><span class="tags">${tags}</span>`,
     body: `<p>${esc(item.summary)}</p>
@@ -348,11 +422,20 @@ function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
         aiValue: short(r.ai_value, 300),
         coderValue: short(r.coder_value, 300),
         reason: r.reason,
+        decidedBy: r.decided_by,
+        visitDate: r.visit_date,
+        appLink: r.app_link,
+        basis: r.ai_basis,
+        model: r.model,
+        promptLine: r.prompt_field_line,
+        instruction: r.prompt_instruction,
+        evidence: r.evidence,
       })),
   });
   const patterns = page.rejectedPatterns
-    .map((p, i) =>
-      card(
+    .map((p, i) => {
+      const rows: RejectedField[] = rejected.groups.filter((g) => p.fieldKeys.includes(g.fieldKey)).flatMap((g) => g.rows);
+      return card(
         {
           id: `rejected-${i}`,
           title: p.title,
@@ -360,6 +443,8 @@ function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
           summary: p.finding,
           proposal: p.proposal,
           issues: p.relatedIssue ? [p.relatedIssue] : [],
+          date: dateSpan(rows.map((r) => r.decided_at)),
+          people: [{ label: "Rejected by", names: unique(rows.map((r) => r.decided_by)) }],
           sources: [dbSource(p.fieldKeys)],
           head: `<span class="title">${esc(p.title)}</span><span class="tags">${p.fieldKeys
           .slice(0, 4)
@@ -370,8 +455,8 @@ function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
   ${p.relatedIssue ? `<p class="muted">Related: ${esc(p.relatedIssue)}</p>` : ""}`,
         },
         data,
-      ),
-    )
+      );
+    })
     .join("\n");
   const rows = rejected.groups
     .map((g) =>
@@ -381,7 +466,7 @@ function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
             i === 0
               ? `<td rowspan="${g.rows.length}"><b>${esc(g.fieldKey)}</b> <span class="count">${g.rows.length}×</span><br><span class="muted">${esc(g.form)} · ${esc(g.fieldLabel)}</span></td>`
               : ""
-          }<td>${esc(r.organization ?? "")}</td><td>${r.rejected_via === "review" ? "rejected" : "overwritten"}</td>
+          }<td>${esc(r.organization ?? "")}</td><td>${r.rejected_via === "review" ? "rejected" : "overwritten"}${r.decided_by ? ` by ${esc(r.decided_by)}` : ""}</td>
 <td><code>${esc(short(r.ai_value))}</code> → <code>${esc(short(r.coder_value))}</code></td><td>${esc(r.reason ?? "")}</td></tr>`,
         )
         .join(""),
@@ -419,6 +504,10 @@ button.ghost{background:transparent;color:var(--muted);border:1px solid var(--li
 .item summary::-webkit-details-marker{display:none}
 .item summary::before{content:"▸";color:var(--muted);font-size:12px}.item details[open] summary::before{content:"▾"}
 .item .title{font-weight:600;flex:1;min-width:0}.urgency{flex:none}.item.done{opacity:.5}.item.done .title{text-decoration:line-through}
+.date{font-size:12px;color:var(--muted);white-space:nowrap;margin-left:8px}
+.people{font-size:13px;display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 0 8px}
+li.trace{border-top:1px solid #0001;padding-top:8px;margin-top:8px}li.trace .label{margin:8px 0 2px}
+ul.evidence{margin:0;padding-left:16px}
 .tags{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:40%}
 .tag{font-size:11px;background:var(--tag);color:var(--muted);border-radius:4px;padding:1px 6px;white-space:nowrap}.issue-tag{color:var(--accent)}
 .body{padding:8px 0 2px 18px}.body p{margin:6px 0}.body ul{margin:4px 0;padding-left:18px;font-size:13px}
