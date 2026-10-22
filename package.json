@@ -15,6 +15,7 @@
     "test": "node --import tsx --test test/*.test.ts",
     "icon": "node scripts/render-icon.mjs",
     "rejected-fields": "tsx --env-file=.env scripts/rejected-fields.ts",
+    "traces": "tsx --env-file=.env scripts/traces.ts",
     "agenda": "tsx --env-file=.env scripts/open-agenda.ts"
   },
   "dependencies": {

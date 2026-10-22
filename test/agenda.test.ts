@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Conversation } from "../src/agenda/collect.js";
-import { localParts } from "../src/agenda/index.js";
+import { localParts, manualWindow } from "../src/agenda/index.js";
 import { issuesFor, slackTimestamps, sourceFooter, type LinkedIssue } from "../src/agenda/linear.js";
 import { groupRejected, type RejectedField } from "../src/agenda/rejected.js";
 import fs from "node:fs";
@@ -198,4 +198,20 @@ test("reads the visible decision lists when the data block is missing", () => {
   assert.deepEqual(payload.decided, [{ id: "a", note: "ship it\n\n1. and a second line" }]);
   assert.deepEqual(payload.open, [{ id: "b", note: "" }, { id: "c", note: "ask Megan first" }]);
   assert.equal(parseDecisionsText("hello", dir), null);
+});
+
+test("a manual agenda after today's scheduled run rebuilds that window", () => {
+  const tz = "America/Bogota";
+  const state = { lastSince: "2026-10-20T15:00:00.000Z", lastUntil: "2026-10-21T15:00:00.000Z" };
+  // 10:50 Bogota, after the 10:00 run: same window, so a late rejected-fields export still counts.
+  assert.deepEqual(manualWindow(state, new Date("2026-10-21T15:50:00Z"), tz), {
+    since: new Date(state.lastSince),
+    until: new Date(state.lastUntil),
+  });
+  // Next morning before the run: previews the upcoming window.
+  const now = new Date("2026-10-22T13:00:00Z");
+  assert.deepEqual(manualWindow(state, now, tz), { since: new Date(state.lastUntil), until: now });
+  // State from before lastSince was stored: assumes a 24h window.
+  const legacy = manualWindow({ lastUntil: state.lastUntil }, new Date("2026-10-21T15:50:00Z"), tz);
+  assert.deepEqual(legacy.since, new Date(state.lastSince));
 });

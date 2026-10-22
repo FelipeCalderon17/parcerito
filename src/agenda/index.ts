@@ -23,7 +23,9 @@ const LINEAR_LOOKBACK_MS = 8 * 24 * 3600 * 1000;
 const LATE_RUN_GRACE_MINUTES = 3 * 60;
 const DEFAULT_WINDOW_MS = 24 * 3600 * 1000;
 
-interface AgendaState {
+export interface AgendaState {
+  /** Start of the last scheduled window, so a manual rebuild later that day can cover it again. */
+  lastSince?: string;
   /** End of the last scheduled window; the next one starts here. */
   lastUntil?: string;
   /** Local date (YYYY-MM-DD) of the last scheduled attempt, successful or not. */
@@ -77,11 +79,11 @@ export class DailyAgenda {
 
     this.writeState({ ...state, lastAttemptDate: now.date });
     const until = new Date();
-    const since = this.windowStart(state, until);
+    const since = nextWindowStart(state, until, this.config.AGENDA_BACKFILL_SINCE);
     try {
       await this.run({ since, until });
       // Only a successful run moves the window, so a failed day is picked up by the next one.
-      this.writeState({ lastAttemptDate: now.date, lastUntil: until.toISOString() });
+      this.writeState({ lastAttemptDate: now.date, lastSince: since.toISOString(), lastUntil: until.toISOString() });
     } catch (error) {
       console.error("[agenda] scheduled run failed", error);
       await this.client.chat
@@ -93,19 +95,13 @@ export class DailyAgenda {
     }
   }
 
-  private windowStart(state: AgendaState, until: Date): Date {
-    if (state.lastUntil) return new Date(state.lastUntil);
-    if (this.config.AGENDA_BACKFILL_SINCE) return new Date(this.config.AGENDA_BACKFILL_SINCE);
-    return new Date(until.getTime() - DEFAULT_WINDOW_MS);
-  }
-
   /**
-   * Builds the agenda on demand (DM `agenda`), over the same window the next scheduled run will use.
+   * Builds the agenda on demand (DM `agenda`), over the window manualWindow picks.
    * It files missing Linear issues but doesn't move the window, so the scheduled agenda stays complete.
    */
   runNow(): Promise<AgendaResult> {
-    const until = new Date();
-    return this.run({ since: this.windowStart(this.readState(), until), until });
+    const { AGENDA_TIMEZONE, AGENDA_BACKFILL_SINCE } = this.config;
+    return this.run(manualWindow(this.readState(), new Date(), AGENDA_TIMEZONE, AGENDA_BACKFILL_SINCE));
   }
 
   private run(window: { since: Date; until: Date }): Promise<AgendaResult> {
@@ -330,6 +326,29 @@ ${message}
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
     fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
   }
+}
+
+function nextWindowStart(state: AgendaState, until: Date, backfillSince?: string): Date {
+  if (state.lastUntil) return new Date(state.lastUntil);
+  if (backfillSince) return new Date(backfillSince);
+  return new Date(until.getTime() - DEFAULT_WINDOW_MS);
+}
+
+/**
+ * The window a manual `agenda` covers. Once today's scheduled agenda has run, it rebuilds that same window, so a
+ * late input (the rejected-fields export usually arrives after the scheduled run) lands in today's agenda instead
+ * of a near-empty window starting at the scheduled time. Before that, it previews the next scheduled window.
+ */
+export function manualWindow(state: AgendaState, now: Date, timeZone: string, backfillSince?: string) {
+  if (state.lastUntil) {
+    const until = new Date(state.lastUntil);
+    if (localParts(until, timeZone).date === localParts(now, timeZone).date) {
+      // State written before lastSince existed: assume the default window.
+      const since = state.lastSince ? new Date(state.lastSince) : new Date(until.getTime() - DEFAULT_WINDOW_MS);
+      return { since, until };
+    }
+  }
+  return { since: nextWindowStart(state, now, backfillSince), until: now };
 }
 
 /** Wall-clock date, weekday (0 = Sunday) and time in a time zone. */

@@ -1,31 +1,20 @@
 /**
  * Exports the AI suggestions that coders rejected or overwrote in Lime production and uploads them to your DM
- * with the bot, where the daily agenda picks them up. Runs on your machine: production is only reachable through
- * your AWS SSO login and an SSM tunnel.
+ * with the bot, where the daily agenda picks them up. Runs on your machine (see prod-db.ts).
  *
  *   npm run rejected-fields            # last 7 days (the agenda keeps only its own window)
  *   npm run rejected-fields -- --days 14
  */
-import { execFile, spawn } from "node:child_process";
-import net from "node:net";
-import { promisify } from "node:util";
-import { WebClient } from "@slack/web-api";
-
-const run = promisify(execFile);
-const PROFILE = "limeai-data";
-const REGION = "us-east-1";
-const LOCAL_PORT = 15432;
-const DB_HOST = "production-database-postgresql.c0lsqwy6kuu3.us-east-1.rds.amazonaws.com";
-const SECRET_ID = "limeai/production/db-readonly/felipe";
-const PSQL = process.env.PSQL ?? "/opt/homebrew/opt/libpq/bin/psql";
-const env = { ...process.env, AWS_PROFILE: PROFILE, AWS_REGION: REGION };
+import { openBotDm, withProdDb } from "./prod-db.js";
 
 const daysArg = process.argv.indexOf("--days");
 const days = daysArg > 0 ? Number(process.argv[daysArg + 1]) : 7;
 if (!Number.isInteger(days) || days < 1) throw new Error("--days must be a positive integer");
 
 // Rejected on review (with the coder's reason), or overwritten by a coder. Lime's own automatic rejections
-// ('outdated', 'entity_removed') aren't feedback on the AI, so they're left out.
+// ('outdated', 'entity_removed') aren't feedback on the AI, so they're left out. Each row carries its trace: who
+// decided, the field's line in the prompt that was sent, the INSTRUCTIONS block it points into and the cited
+// evidence. The full prompt (patient, transcript, documents) stays out; the joins mirror the traces queries.
 const SQL = `
 select coalesce(json_agg(x order by x.decided_at desc), '[]') from (
   select r.id, r.decided_at, o.name as organization, f.name as form, fd.key as field_key, fd.label as field_label,
@@ -33,55 +22,61 @@ select coalesce(json_agg(x order by x.decided_at desc), '[]') from (
     (select a.value from answer a
       where a.task_id = r.task_id and a.form_field_id = r.form_field_id and a.created_at >= r.created_at
         and a.source = 'clinician'
-      order by a.created_at desc limit 1) as coder_value
+      order by a.created_at desc limit 1) as coder_value,
+    dec.who as decided_by, dec.email as decided_by_email, t.visit_date, t.task as task_name,
+    coalesce(r.basis, 'stated') as ai_basis,
+    concat('https://app.getlimeai.com/cases/', t.case_id, '?tab=visits&orgId=', o.id,
+      '&visitId=', v.id, '&visitTab=form') as app_link,
+    st.model_id as model,
+    split_part(substr(st.input ->> 'user',
+      nullif(strpos(st.input ->> 'user', '{"key":' || to_jsonb(fd.key)::text), 0)), E'\\n', 1) as prompt_field_line,
+    substring(st.input ->> 'user' from E'\\nINSTRUCTIONS\\n(.*?)\\n\\nOUTPUT CONTRACT') as prompt_instructions,
+    (select coalesce(json_agg(json_build_object(
+        'type', case eu.source_kind when 'transcript_utterance' then 'transcript' when 'ocr_block' then 'document'
+          when 'medication_photo' then 'photo' else coalesce(eu.source_kind, 'unresolved') end,
+        'document', coalesce(fl.display_name, fl.original_name),
+        'page', eu.page_number,
+        'speaker', eu.speaker,
+        'at', to_char(make_interval(secs => coalesce((e.c ->> 'startMs')::int, eu.start_ms) / 1000.0), 'HH24:MI:SS'),
+        'snippet', e.c ->> 'snippet') order by e.ord), '[]'::json)
+      from jsonb_array_elements(coalesce(r.evidence, '[]'::jsonb)) with ordinality as e(c, ord)
+      left join evidence_unit eu on eu.id = (e.c ->> 'unitId')::uuid
+      left join file fl on fl.id = eu.file_id) as evidence
   from ai_recommendation r
   join task t on t.id = r.task_id
+  left join visit v on v.task_id = t.id
   left join clinician c on c.id = t.clinician_id
   left join organization o on o.id = c.organization_id
   join form_field ff on ff.id = r.form_field_id
   join field fd on fd.id = ff.field_id
   join form f on f.id = ff.form_id
+  left join lateral (
+    select coalesce(cl.linked_user_name, cl.name) as who, cl.linked_user_email as email
+    from clinician cl
+    where cl.propel_auth_user_id = r.decided_by::text and cl.deleted_at is null
+    order by (cl.organization_id = o.id) desc, cl.created_at desc
+    limit 1
+  ) dec on true
+  left join lateral (
+    select s.model_id, s.input from ai_step s
+    where s.run_id = r.ai_run_id and s.status = 'accepted' and s.kind = 'model'
+      and (s.output -> 'fieldIds' @> jsonb_build_array(ff.field_id::text)
+        or strpos(s.input ->> 'user', '{"key":' || to_jsonb(fd.key)::text) > 0)
+    order by (s.output -> 'fieldIds' @> jsonb_build_array(ff.field_id::text)) desc nulls last, s.created_at
+    limit 1
+  ) st on true
   where r.decision = 'rejected'
     and (r.rejected_via = 'review' or r.rejection_reason not in ('outdated', 'entity_removed'))
     and r.decided_at > now() - interval '${days} days'
 ) x`;
 
 async function main() {
-  const token = process.env.SLACK_BOT_TOKEN;
-  const recipient = process.env.AGENDA_RECIPIENT_ID ?? process.env.ALLOWED_SLACK_USER_IDS?.split(",")[0]?.trim();
-  if (!token || !recipient) throw new Error("Set SLACK_BOT_TOKEN and ALLOWED_SLACK_USER_IDS in .env");
-
-  await ensureLoggedIn();
-  const closeTunnel = await openTunnel();
-  let rows: unknown[];
-  try {
-    const { stdout: secret } = await run(
-      "aws",
-      ["secretsmanager", "get-secret-value", "--secret-id", SECRET_ID, "--query", "SecretString", "--output", "text"],
-      { env },
-    );
-    const { stdout } = await run(
-      PSQL,
-      [
-        `host=localhost port=${LOCAL_PORT} dbname=prod_db user=felipe_readonly sslmode=require`,
-        "-At",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
-        SQL,
-      ],
-      { env: { ...env, PGPASSWORD: JSON.parse(secret).password }, maxBuffer: 64 * 1024 * 1024 },
-    );
-    rows = JSON.parse(stdout);
-  } finally {
-    closeTunnel();
-  }
+  const { slack, channel } = await openBotDm();
+  const rows = (JSON.parse(await withProdDb((query) => query(SQL))) as RawRow[]).map(toTrace);
 
   const exportedAt = new Date().toISOString();
-  const slack = new WebClient(token);
-  const dm = await slack.conversations.open({ users: recipient });
   await slack.files.uploadV2({
-    channel_id: dm.channel!.id!,
+    channel_id: channel,
     filename: `rejected-fields-${exportedAt.slice(0, 10)}.json`,
     title: "Rejected AI suggestions (prod export)",
     content: JSON.stringify({ exportedAt, days, rows }),
@@ -90,73 +85,35 @@ async function main() {
   console.log(`Uploaded ${rows.length} rows to your DM with the bot.`);
 }
 
-async function ensureLoggedIn() {
-  try {
-    await run("aws", ["sts", "get-caller-identity"], { env });
-  } catch {
-    console.log("AWS session expired, opening the SSO login in your browser…");
-    await new Promise<void>((resolve, reject) => {
-      spawn("aws", ["sso", "login", "--profile", PROFILE], { env, stdio: "inherit" }).on("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error("aws sso login failed")),
-      );
-    });
-  }
+interface RawRow {
+  prompt_field_line: string | null;
+  prompt_instructions: string | null;
+  evidence: { snippet: string | null }[] | null;
+  [key: string]: unknown;
 }
 
-/** Opens the SSM port-forward, unless one is already listening. Returns a function that closes it. */
-async function openTunnel(): Promise<() => void> {
-  if (await portOpen(LOCAL_PORT)) return () => {};
-  const { stdout } = await run(
-    "aws",
-    [
-      "ec2",
-      "describe-instances",
-      "--filters",
-      "Name=tag:Role,Values=db-tunnel",
-      "Name=instance-state-name,Values=running",
-      "--query",
-      "Reservations[0].Instances[0].InstanceId",
-      "--output",
-      "text",
-    ],
-    { env },
-  );
-  const tunnel = spawn(
-    "aws",
-    [
-      "ssm",
-      "start-session",
-      "--target",
-      stdout.trim(),
-      "--document-name",
-      "AWS-StartPortForwardingSessionToRemoteHost",
-      "--parameters",
-      JSON.stringify({ host: [DB_HOST], portNumber: ["5432"], localPortNumber: [String(LOCAL_PORT)] }),
-    ],
-    { env },
-  );
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("The database tunnel didn't open within 60s")), 60_000);
-    tunnel.stdout.on("data", (chunk: Buffer) => {
-      if (chunk.toString().includes("Waiting for connections")) {
-        clearTimeout(timer);
-        resolve();
-      }
-    });
-    tunnel.on("exit", (code) => reject(new Error(`The database tunnel exited (${code})`)));
-  });
-  return () => tunnel.kill();
+/** Keeps only this field's own instruction out of the prompt's INSTRUCTIONS block, and shortens long snippets. */
+export function toTrace({ prompt_field_line, prompt_instructions, evidence, ...row }: RawRow) {
+  return {
+    ...row,
+    prompt_field_line: prompt_field_line || null,
+    prompt_instruction: fieldInstruction(prompt_field_line, prompt_instructions),
+    evidence: (evidence ?? []).map((e) => ({
+      ...e,
+      snippet: e.snippet && e.snippet.length > 600 ? `${e.snippet.slice(0, 600)}…` : e.snippet,
+    })),
+  };
 }
 
-function portOpen(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect(port, "127.0.0.1");
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once("error", () => resolve(false));
-  });
+/** `{"key":…,"instruction":"i3"}` + `[i1] …\n[i3] …` → the text of `[i3]`. */
+export function fieldInstruction(fieldLine: string | null, block: string | null): string | null {
+  const id = fieldLine?.match(/"instruction"\s*:\s*"([^"]+)"/)?.[1];
+  if (!id || !block) return null;
+  const start = block.indexOf(`[${id}]`);
+  if (start < 0) return null;
+  const rest = block.slice(start + id.length + 2);
+  const next = rest.search(/\n\[[^\]\n]+\]/);
+  return (next < 0 ? rest : rest.slice(0, next)).trim() || null;
 }
 
 main().catch((error) => {
