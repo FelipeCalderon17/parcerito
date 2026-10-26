@@ -16,7 +16,13 @@
     "icon": "node scripts/render-icon.mjs",
     "rejected-fields": "tsx --env-file=.env scripts/rejected-fields.ts",
     "traces": "tsx --env-file=.env scripts/traces.ts",
-    "agenda": "tsx --env-file=.env scripts/open-agenda.ts"
+    "agenda": "tsx --env-file=.env scripts/open-agenda.ts",
+    "agenda:local": "tsx --env-file=.env scripts/agenda-local.ts",
+    "hub": "tsx --env-file=.env scripts/review-hub.ts",
+    "manual-index": "tsx scripts/manual-index.ts",
+    "agency-docs": "tsx scripts/agency-docs.ts",
+    "megan-topics": "tsx --env-file=.env scripts/megan-topics.ts",
+    "review:publish": "tsx --env-file=.env scripts/publish-review.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.293",

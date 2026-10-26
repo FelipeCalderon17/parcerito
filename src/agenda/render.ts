@@ -1,13 +1,18 @@
+import { pageRange, type CardCms } from "../manual/notes.js";
 import type { Conversation } from "./collect.js";
 import type { LinkedIssue } from "./linear.js";
 import { short, type RejectedEvidence, type RejectedExport, type RejectedField } from "./rejected.js";
 import type { CarriedCard } from "./sync.js";
 import { SECTIONS, type RejectedPattern, type Section, type SkippedConversation, type TriageItem } from "./triage.js";
 
-export interface AgendaItem extends Omit<TriageItem, "linear"> {
+export interface AgendaItem extends Omit<TriageItem, "linear" | "cms"> {
   issues: (LinkedIssue & { isNew?: boolean })[];
   linearNote?: string;
+  cms?: CardCms;
 }
+
+/** A rejected pattern with its manual notes resolved. */
+export type AgendaPattern = Omit<RejectedPattern, "cms"> & { cms?: CardCms };
 
 export interface AgendaPage {
   date: string;
@@ -20,7 +25,7 @@ export interface AgendaPage {
   conversations: Map<string, Conversation>;
   /** Null when today's export from `npm run rejected-fields` hasn't been uploaded. */
   rejected: RejectedExport | null;
-  rejectedPatterns: RejectedPattern[];
+  rejectedPatterns: AgendaPattern[];
   /** Items left open at an earlier sync, with their Linear issues refreshed. */
   carried: (CarriedCard & { issueDetails: LinkedIssue[] })[];
   /** Notes from the previous sync (e.g. the Granola summary). */
@@ -84,6 +89,8 @@ export interface AgendaCard {
   /** Sub-points to tick off one by one. */
   checklist?: { section: string; type: string; text: string }[];
   sources: Source[];
+  /** What the CMS OASIS-E2 manual says about it (`manual` is the hand-added flag). */
+  cms?: CardCms;
   /** Added by hand to the HTML, so it only exists in the browser. */
   manual?: boolean;
   carriedFrom?: string;
@@ -319,14 +326,33 @@ function renderItem(item: AgendaItem, conversations: Map<string, Conversation>, 
         { label: "Replied", names: unique(messages.filter((m) => !m.external).map((m) => m.author)) },
       ],
       sources,
+      cms: item.cms,
       head: `<span class="urgency ${item.urgency}">${item.urgency}</span><span class="title">${esc(item.title)}</span><span class="tags">${tags}</span>`,
     body: `<p>${esc(item.summary)}</p>
   <p class="proposal"><b>Proposal:</b> ${esc(item.proposal)}</p>
+  ${renderCms(item.cms)}
   <p>${issues || `<span class="muted">${esc(item.linearNote ?? "No Linear issue")}</span>`}</p>
   ${item.linearNote && item.issues.length ? `<p class="muted">${esc(item.linearNote)}</p>` : ""}`,
     },
     data,
   );
+}
+
+const CMS_VERDICT = { covered: "Covered", partial: "Partial", "not-in-manual": "Not in manual" } as const;
+
+/** What the CMS manual says: the verdict and answer for this item, then each code's notes with its pages. */
+export function renderCms(cms: CardCms | undefined): string {
+  if (!cms || (!cms.answer && !cms.codes.length)) return "";
+  const codes = cms.codes
+    .map(
+      (c) => `<li><b>${esc(c.code)}</b> ${esc(c.title)} <span class="muted">· ${esc(pageRange(c.pages))}</span>${
+        c.notes ? `<div class="quote">${esc(c.notes)}</div>` : ""
+      }</li>`,
+    )
+    .join("");
+  return `<div class="cms"><p class="label">📘 CMS OASIS-E2 manual${
+    cms.verdict ? ` <span class="verdict ${esc(cms.verdict)}">${esc(CMS_VERDICT[cms.verdict] ?? cms.verdict)}</span>` : ""
+  }</p>${cms.answer ? `<p>${esc(cms.answer)}</p>` : ""}${codes ? `<ul>${codes}</ul>` : ""}</div>`;
 }
 
 function issueLinks(issues: (LinkedIssue & { isNew?: boolean })[]): string {
@@ -357,6 +383,7 @@ function renderCarried(page: AgendaPage, data: AgendaCard[]): string {
           body: `${item.lastNote ? `<p class="last-note"><b>Last time:</b> ${esc(item.lastNote)}</p>` : ""}
   ${item.summary ? `<p>${esc(item.summary)}</p>` : ""}
   ${item.proposal ? `<p class="proposal"><b>Proposal:</b> ${esc(item.proposal)}</p>` : ""}
+  ${renderCms(item.cms)}
   ${issueDetails.length ? `<p>${issueLinks(issueDetails)}</p>` : ""}`,
         },
         data,
@@ -422,7 +449,7 @@ function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
         aiValue: short(r.ai_value, 300),
         coderValue: short(r.coder_value, 300),
         reason: r.reason,
-        decidedBy: r.decided_by,
+        decidedBy: r.decided_by || "Name unavailable",
         visitDate: r.visit_date,
         appLink: r.app_link,
         basis: r.ai_basis,
@@ -444,14 +471,16 @@ function renderRejected(page: AgendaPage, data: AgendaCard[]): string {
           proposal: p.proposal,
           issues: p.relatedIssue ? [p.relatedIssue] : [],
           date: dateSpan(rows.map((r) => r.decided_at)),
-          people: [{ label: "Rejected by", names: unique(rows.map((r) => r.decided_by)) }],
+          people: [{ label: "Rejected by", names: unique(rows.map((r) => r.decided_by || "Name unavailable")) }],
           sources: [dbSource(p.fieldKeys)],
+          cms: p.cms,
           head: `<span class="title">${esc(p.title)}</span><span class="tags">${p.fieldKeys
           .slice(0, 4)
           .map((k) => `<span class="tag">${esc(k)}</span>`)
           .join("")}${p.fieldKeys.length > 4 ? `<span class="tag">+${p.fieldKeys.length - 4}</span>` : ""}</span>`,
           body: `<p>${esc(p.finding)}</p>
   <p class="proposal"><b>Proposal:</b> ${esc(p.proposal)}</p>
+  ${renderCms(p.cms)}
   ${p.relatedIssue ? `<p class="muted">Related: ${esc(p.relatedIssue)}</p>` : ""}`,
         },
         data,
@@ -527,6 +556,9 @@ details.sources{margin:10px 0 4px;font-size:13px}details.sources>summary{cursor:
 .pt{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border-radius:4px;padding:1px 5px;margin-right:2px;background:var(--tag);color:var(--muted)}
 .pt.prompt{background:#e8e3f8;color:#4a2f9a}.pt.warning{background:#fdf0d5;color:#7a4d00}.pt.layout{background:#dff1f0;color:#0d5c58}
 .pt.ok{background:#e6efe3;color:#2f5a25}.pt.open{background:#fde2e1;color:#8a1c17}
+.cms{background:var(--tag);border-radius:6px;padding:6px 10px;margin:8px 0}.cms .label{margin:0}.cms ul{list-style:none;padding:0!important}.cms li{margin:4px 0}
+.verdict{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border-radius:4px;padding:1px 6px;margin-left:4px}
+.verdict.covered{background:#e6efe3;color:#2f5a25}.verdict.partial{background:#fdf0d5;color:#7a4d00}.verdict.not-in-manual{background:#fde2e1;color:#8a1c17}
 .carried-tag{color:#7a4d00;background:#fdf0d5}.last-note{background:var(--tag);border-radius:6px;padding:6px 10px}
 details.notes>summary{cursor:pointer}.notes-text{font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
 textarea{width:100%;min-height:48px;margin-top:8px;border:1px solid var(--line);border-radius:6px;padding:8px;background:transparent;color:inherit;font:inherit;font-size:14px}
