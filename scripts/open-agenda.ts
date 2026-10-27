@@ -1,43 +1,92 @@
 /**
- * Downloads the newest agenda the bot DMed you into AGENDA_LOCAL_DIR and opens it in your browser.
- * The file name stays the same for a given day, so your ticks and notes (kept by the browser) survive re-opening.
+ * The morning command: downloads the newest agenda the bot DMed you into AGENDA_LOCAL_DIR, then builds the local
+ * review hub from every agenda there (pulling visits from prod, see hub-build.ts) and opens the hub in your browser.
+ * File names stay the same, so your ticks and notes (kept by the browser) survive re-opening.
  *
- *   npm run agenda
+ *   npm run agenda                    # download, build the hub with the prod pull (AWS login if expired), open it
+ *   npm run agenda -- --no-db         # same, but visits come from the hub's cache only (no AWS login)
+ *   npm run agenda -- --agenda-only   # old behaviour: download and open the agenda file, no hub
+ *   npm run agenda -- --since 2026-10-22   # no meeting since then: also fetch those days' agendas, all in Today
+ *
+ * If the hub build fails (login cancelled, tunnel error…) the downloaded agenda is opened instead.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { WebClient } from "@slack/web-api";
+import { agendaFilesIn, buildHub } from "./hub-build.js";
 
 const AGENDA_FILE = /^nico-sync-\d{4}-\d{2}-\d{2}\.html$/;
 
-async function main() {
+/**
+ * Downloads the newest agenda from your DM into `dir` (unless a newer local copy exists) and returns its path. With
+ * `since` (YYYY-MM-DD), every agenda from that day on is downloaded too, so days without a meeting aren't skipped.
+ */
+async function downloadAgenda(dir: string, since?: string): Promise<string> {
   const token = process.env.SLACK_BOT_TOKEN;
   const recipient = process.env.AGENDA_RECIPIENT_ID ?? process.env.ALLOWED_SLACK_USER_IDS?.split(",")[0]?.trim();
   if (!token || !recipient) throw new Error("Set SLACK_BOT_TOKEN and ALLOWED_SLACK_USER_IDS in .env");
-  const dir = process.env.AGENDA_LOCAL_DIR ?? path.join(os.homedir(), "Desktop", "Lime", "agenda");
 
   const slack = new WebClient(token);
   const dm = await slack.conversations.open({ users: recipient });
-  const files = await slack.files.list({ channel: dm.channel!.id!, count: 50 });
-  const latest = (files.files ?? [])
-    .filter((f) => f.name && AGENDA_FILE.test(f.name) && f.url_private_download)
-    .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))[0];
+  // Fresh uploads can appear in the DM before Slack's file-list index catches up.
+  const [files, history] = await Promise.all([
+    slack.files.list({ channel: dm.channel!.id!, count: 100 }),
+    slack.conversations.history({ channel: dm.channel!.id!, limit: 200 }),
+  ]);
+  // The last upload of each day's agenda (the bot re-posts it when rebuilt).
+  const byName = new Map<string, { name?: string; created?: number; url_private_download?: string }>();
+  for (const f of [...(files.files ?? []), ...(history.messages ?? []).flatMap((m) => m.files ?? [])])
+    if (f.name && AGENDA_FILE.test(f.name) && f.url_private_download && (f.created ?? 0) >= (byName.get(f.name)?.created ?? 0))
+      byName.set(f.name, f);
+  const all = [...byName.values()].sort((a, b) => a.name!.localeCompare(b.name!));
+  const latest = all.at(-1);
   if (!latest) throw new Error("No agenda in your DM yet. DM the bot `agenda` to build one.");
+  const wanted = since ? all.filter((f) => f.name!.slice(10, 20) >= since) : [latest];
 
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, latest.name!);
-  // A local copy changed after the bot posted it (e.g. items added by hand) wins over the Slack one.
-  const localIsNewer = fs.existsSync(file) && fs.statSync(file).mtimeMs / 1000 > (latest.created ?? 0);
-  if (!localIsNewer) {
-    const res = await fetch(latest.url_private_download!, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Couldn't download ${latest.name}: ${res.status}`);
-    fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  for (const agenda of wanted.length ? wanted : [latest]) {
+    const file = path.join(dir, agenda.name!);
+    // A local copy changed after the bot posted it (e.g. items added by hand) wins over the Slack one.
+    const localIsNewer = fs.existsSync(file) && fs.statSync(file).mtimeMs / 1000 > (agenda.created ?? 0);
+    if (!localIsNewer) {
+      const res = await fetch(agenda.url_private_download!, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`Couldn't download ${agenda.name}: ${res.status}`);
+      fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+    }
+    console.log(`${localIsNewer ? "Kept local" : "Downloaded"} agenda: file://${file}`);
   }
+  return path.join(dir, latest.name!);
+}
 
-  console.log(`file://${file}`);
-  execFile("open", [file]);
+/** `--since YYYY-MM-DD`: the first agenda since the last meeting. */
+function sinceArg(argv: string[]): string | undefined {
+  const value = argv[argv.indexOf("--since") + 1];
+  if (!argv.includes("--since")) return undefined;
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("--since needs a date like 2026-10-22");
+  return value;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const dir = process.env.AGENDA_LOCAL_DIR ?? path.join(os.homedir(), "Desktop", "Lime", "agenda");
+  const since = sinceArg(argv);
+  const agenda = await downloadAgenda(dir, since);
+  let open = agenda;
+  if (!argv.includes("--agenda-only")) {
+    const noDb = argv.includes("--no-db");
+    console.log(`Building review hub ${noDb ? "from cached visits (--no-db)" : "with the prod visit pull"}…`);
+    try {
+      open = await buildHub({ agendaFiles: agendaFilesIn(dir), noDb, since });
+      console.log(`Hub ready: file://${open}`);
+    } catch (error) {
+      console.error(`Hub build failed: ${error instanceof Error ? error.message : error}`);
+      console.error("Opening the agenda instead.");
+    }
+  }
+  console.log(`Opening file://${open}`);
+  execFile("open", [open]);
 }
 
 main().catch((error) => {

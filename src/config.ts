@@ -57,6 +57,11 @@ const schema = z.object({
   // Linear team whose Triage receives issues created on Dotterino's behalf.
   LINEAR_TEAM_KEY: z.string().default("ENG"),
 
+  LIME_REVIEW_API_URL: z.string().url().optional(),
+  LIME_REVIEW_INGEST_KEY: z.string().min(32).optional(),
+  LIME_REVIEW_TOPICS_FILE: z.string().optional(),
+  LIME_REVIEW_WEB_URL: z.string().url().optional(),
+
   DATA_DIR: z.string().default(path.resolve("data")),
   BOT_NAME: z.string().default("Parcerito"),
 });

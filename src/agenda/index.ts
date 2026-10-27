@@ -1,7 +1,13 @@
+import { processReviewBuild, queueReviewBuild } from "../review/daily.js";
+import { decisionContext, flushReviewOutbox, loadReviewDecisions, loadReviewRejections, reviewConfigured, publishReview, publishedPack } from "../review/publish.js";
+import { agendaItem, hubId, parseAgendaHtml } from "../review/items.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { Config } from "../config.js";
+import { manualItems, oasisCodes } from "../manual/codes.js";
+import { loadManual } from "../manual/lookup.js";
+import { cardCms, describeNotes, manualNotes, type ManualNote } from "../manual/notes.js";
 import { collectConversations, type Conversation } from "./collect.js";
 import { issuesFor, LinearClient, sourceFooter, type LinkedIssue } from "./linear.js";
 import { describeRejected, loadRejectedFields, type RejectedExport } from "./rejected.js";
@@ -22,6 +28,8 @@ const LINEAR_LOOKBACK_MS = 8 * 24 * 3600 * 1000;
 // running in the evening would eat the window that the next morning's agenda needs.
 const LATE_RUN_GRACE_MINUTES = 3 * 60;
 const DEFAULT_WINDOW_MS = 24 * 3600 * 1000;
+// Manual items summarized for one triage (each note is ~0.5–1k chars, see describeNotes for the size cap).
+const MAX_MANUAL_ITEMS = 25;
 
 export interface AgendaState {
   /** Start of the last scheduled window, so a manual rebuild later that day can cover it again. */
@@ -46,6 +54,7 @@ export class DailyAgenda {
   constructor(
     private readonly config: Config,
     private readonly client: WebClient,
+    private readonly triage: typeof triageConversations = triageConversations,
   ) {
     this.stateFile = path.join(config.DATA_DIR, "agenda", "state.json");
     this.linear = new LinearClient(config.LINEAR_API_KEY ?? "", config.LINEAR_TEAM_KEY);
@@ -62,6 +71,11 @@ export class DailyAgenda {
   /** Checks once a minute; runs on weekdays at AGENDA_TIME (local), once per day. */
   start(): void {
     if (!this.enabled) return;
+    const flushReviews = () => { void flushReviewOutbox(this.config).catch(() => console.warn('[review] publish pending; will retry in five minutes')); };
+    flushReviews();
+    setInterval(flushReviews,5 * 60_000);
+    const resumeReview = () => { void processReviewBuild(this.config).catch(() => console.warn('[review] build pending; will retry')); };
+    resumeReview();setInterval(resumeReview,5 * 60_000);
     const tick = () => this.tick().catch((error) => console.error("[agenda] scheduler tick failed", error));
     setInterval(tick, 60_000);
     void tick();
@@ -99,9 +113,9 @@ export class DailyAgenda {
    * Builds the agenda on demand (DM `agenda`), over the window manualWindow picks.
    * It files missing Linear issues but doesn't move the window, so the scheduled agenda stays complete.
    */
-  runNow(): Promise<AgendaResult> {
+  runNow(window?: { since: Date; until: Date }): Promise<AgendaResult> {
     const { AGENDA_TIMEZONE, AGENDA_BACKFILL_SINCE } = this.config;
-    return this.run(manualWindow(this.readState(), new Date(), AGENDA_TIMEZONE, AGENDA_BACKFILL_SINCE));
+    return this.run(window ?? manualWindow(this.readState(), new Date(), AGENDA_TIMEZONE, AGENDA_BACKFILL_SINCE));
   }
 
   private run(window: { since: Date; until: Date }): Promise<AgendaResult> {
@@ -127,7 +141,8 @@ export class DailyAgenda {
     const trackedIn = new Map(conversations.map((c) => [c.id, issuesFor(c, tracked)]));
     const byId = new Map(conversations.map((c) => [c.id, c]));
     const dmChannel = (await this.client.conversations.open({ users: this.recipient })).channel!.id!;
-    const rejected = await loadRejectedFields(this.client, {
+    const liveRejected = reviewConfigured(this.config) ? await loadReviewRejections(this.config,since,until).catch(() => null) : null;
+    const rejected = liveRejected ?? await loadRejectedFields(this.client, {
       dmChannel,
       token: this.config.SLACK_BOT_TOKEN,
       since,
@@ -137,18 +152,27 @@ export class DailyAgenda {
       return null;
     });
 
+    const reviewWarnings: string[] = [];
+    const decisions = await loadReviewDecisions(this.config).catch(() => {
+      reviewWarnings.push("Couldn't load saved Lime review decisions; this run has no decision context.");
+      return [];
+    });
+    const manual = loadManual();
+    const notes = await this.manualNotes(conversations, rejected);
     const lastNotes = loadLastNotes(this.config.DATA_DIR, date);
     const carried = await this.refreshCarried(loadCarryover(this.config.DATA_DIR, date));
 
     const triage =
       conversations.length || rejected?.total
-        ? await triageConversations(
+        ? await this.triage(
             this.config,
             {
               conversations,
               trackedIn,
               rejected: rejected?.total ? describeRejected(rejected.groups) : undefined,
+              manual: notes.length ? describeNotes(notes) : undefined,
               lastNotes: lastNotes?.text,
+              approvedDecisions: decisionContext(decisions),
               since,
               until,
             },
@@ -191,7 +215,7 @@ export class DailyAgenda {
         console.error(`[agenda] Linear update failed for ${item.id}`, error);
         linearNote = `⚠️ Couldn't update Linear: ${error instanceof Error ? error.message : String(error)}`;
       }
-      items.push({ ...item, issues: [...issues.values()], linearNote });
+      items.push({ ...item, issues: [...issues.values()], linearNote, cms: cardCms(item.cms, notes, manual) });
     }
 
     // Anything Claude left out of both lists is shown as skipped, so a dropped conversation is still visible.
@@ -209,6 +233,7 @@ export class DailyAgenda {
     const warnings = missingChannels.length
       ? [`I'm not in these channels (add me or fix the name): ${missingChannels.map((c) => `#${c}`).join(", ")}`]
       : [];
+    warnings.push(...reviewWarnings);
     const html = renderAgenda({
       date,
       since,
@@ -219,7 +244,7 @@ export class DailyAgenda {
       skipped,
       conversations: byId,
       rejected,
-      rejectedPatterns: triage.rejectedPatterns,
+      rejectedPatterns: triage.rejectedPatterns.map((p) => ({ ...p, cms: cardCms(p.cms, notes, manual) })),
       carried,
       lastNotes,
       warnings,
@@ -227,8 +252,37 @@ export class DailyAgenda {
     const file = path.join(dir, `nico-sync-${date}.html`);
     fs.writeFileSync(file, html);
     if (!rejected) warnings.push("No rejected-fields export yet: run `rejected-fields` in your terminal, then DM me `agenda`.");
+    const parsed = parseAgendaHtml(html);
+    const published = (parsed?.items ?? []).map(card => {
+      const item = agendaItem(hubId(card.id,date), { card, first: card.carriedFrom ?? date, last: date });
+      const record = publishedPack({ item, linear: [], threads: [], visits: [], errors: [] });
+      // The scheduled bot has report text; production visit enrichment comes from the hub.
+      delete record.evidence;
+      record.detail.blocks.push({ title: 'Source reports', text: card.sources.map(s =>
+        s.kind === 'slack' ? `${s.url}\n${s.messages.map(m => `${m.author}: ${m.text}`).join('\n')}` : JSON.stringify(s)).join('\n\n') });
+      return record;
+    });
+    await publishReview(this.config, {
+      id: `agenda:${date}:${since.toISOString()}:${until.toISOString()}`,
+      observedAt: new Date().toISOString(), since: since.toISOString(), until: until.toISOString(),
+      warnings: [...warnings, 'Visit evidence is enriched separately; see each item for its evidence timestamp.'], items: published,
+    }).catch(() => warnings.push("Couldn't publish to Lime; saved to the local review outbox for retry."));
     await this.deliver(dmChannel, file, date, items.length, skipped.length, created, warnings);
+    queueReviewBuild(this.config);
     return { file, items: items.length, created };
+  }
+
+  /** Manual notes for the OASIS items the conversations and rejections name; never fails the agenda. */
+  private async manualNotes(conversations: Conversation[], rejected: RejectedExport | null): Promise<ManualNote[]> {
+    try {
+      const manual = loadManual();
+      if (!manual) return [];
+      const items = manualItems(manual, mentionedCodes(conversations, rejected)).slice(0, MAX_MANUAL_ITEMS);
+      return await manualNotes(this.config, items.map((i) => i.code), { manual });
+    } catch (error) {
+      console.error("[agenda] couldn't load the manual notes", error);
+      return [];
+    }
   }
 
   /** Re-reads the carried items' Linear issues and drops items whose issues have all been closed since. */
@@ -307,6 +361,7 @@ ${message}
         ? `Filed on Dotterino's behalf (Triage): ${created.map((i) => `<${i.url}|${i.identifier}>`).join(", ")}`
         : "Everything was already tracked in Linear 👌",
       ...warnings.map((w) => `⚠️ ${w}`),
+      ...(this.config.LIME_REVIEW_WEB_URL ? [`Review and save decisions in Lime: ${this.config.LIME_REVIEW_WEB_URL}`] : []),
       `To open it, run \`agenda\` in your terminal (or download the file below).${localFile} Tick items as decided, then hit *Copy decisions for parcerito* and paste them here.`,
     ];
     await this.client.files.uploadV2({
@@ -326,6 +381,15 @@ ${message}
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
     fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
   }
+}
+
+/** OASIS codes and form keys the conversations and rejected rows name, most mentioned first. */
+export function mentionedCodes(conversations: Conversation[], rejected: RejectedExport | null): string[] {
+  const counts = new Map<string, number>();
+  const add = (key: string, n = 1) => counts.set(key, (counts.get(key) ?? 0) + n);
+  for (const c of conversations) for (const m of c.messages) for (const code of oasisCodes(m.text)) add(code);
+  for (const g of rejected?.groups ?? []) add(g.fieldKey, g.rows.length);
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([key]) => key);
 }
 
 function nextWindowStart(state: AgendaState, until: Date, backfillSince?: string): Date {

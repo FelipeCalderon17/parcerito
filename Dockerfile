@@ -14,6 +14,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+COPY manual ./manual
 RUN npm run build && npm prune --omit=dev
 
 COPY scripts/entrypoint.sh /entrypoint.sh

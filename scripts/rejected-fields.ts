@@ -19,10 +19,7 @@ const SQL = `
 select coalesce(json_agg(x order by x.decided_at desc), '[]') from (
   select r.id, r.decided_at, o.name as organization, f.name as form, fd.key as field_key, fd.label as field_label,
     fd.section, r.rejected_via, r.rejection_reason as reason, r.value as ai_value,
-    (select a.value from answer a
-      where a.task_id = r.task_id and a.form_field_id = r.form_field_id and a.created_at >= r.created_at
-        and a.source = 'clinician'
-      order by a.created_at desc limit 1) as coder_value,
+    cod.value as coder_value,
     dec.who as decided_by, dec.email as decided_by_email, t.visit_date, t.task as task_name,
     coalesce(r.basis, 'stated') as ai_basis,
     concat('https://app.getlimeai.com/cases/', t.case_id, '?tab=visits&orgId=', o.id,
@@ -51,9 +48,16 @@ select coalesce(json_agg(x order by x.decided_at desc), '[]') from (
   join field fd on fd.id = ff.field_id
   join form f on f.id = ff.form_id
   left join lateral (
+    select a.value, a.user_id from answer a
+    where a.task_id = r.task_id and a.form_field_id = r.form_field_id and a.created_at >= r.created_at
+      and a.source = 'clinician'
+    order by a.created_at desc limit 1
+  ) cod on true
+  -- Reviews record the decider on the recommendation; overwrites only on the coder's answer.
+  left join lateral (
     select coalesce(cl.linked_user_name, cl.name) as who, cl.linked_user_email as email
     from clinician cl
-    where cl.propel_auth_user_id = r.decided_by::text and cl.deleted_at is null
+    where cl.propel_auth_user_id = coalesce(r.decided_by::text, cod.user_id::text) and cl.deleted_at is null
     order by (cl.organization_id = o.id) desc, cl.created_at desc
     limit 1
   ) dec on true

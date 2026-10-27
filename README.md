@@ -123,14 +123,18 @@ the `parcerito` label. It then DMs you an HTML agenda: items grouped by section,
 
 Messages that aren't issues (thanks, status updates, questions already answered) are listed as skipped, with the
 reason, instead of becoming agenda items. Run `npm run agenda` on your machine to download the latest agenda to
-`AGENDA_LOCAL_DIR` and open it in your browser.
+`AGENDA_LOCAL_DIR`, build the local review hub (every agenda plus Megan's issues, with the linked visits pulled
+read-only from production) and open it in your browser. `--no-db` skips the production pull (cached visits only),
+`--agenda-only` just opens the agenda; `npm run hub` rebuilds the hub alone. The hub holds PHI, so it stays on your
+machine (`~/Desktop/Lime/review-hub`). When shared review publishing is configured,
+its contents are also sent to the authenticated Lime workspace described below.
 
 Each window starts where the previous scheduled run ended (Mondays cover the weekend); the very first one starts at
 `AGENDA_BACKFILL_SINCE`. DM `agenda` to build one on demand without moving the window. Needs `LINEAR_API_KEY`.
 
 The agenda also has a "Rejected AI suggestions" section: form fields where a coder rejected or overwrote the AI's
-value in production, grouped into patterns with proposed prompt changes. Production is only reachable through your
-AWS SSO login, so this part runs on your machine: `npm run rejected-fields` logs in if needed, opens the database
+value in production, grouped into patterns with proposed prompt changes. Without the shared Lime integration,
+production reads use your AWS SSO login: `npm run rejected-fields` logs in if needed, opens the database
 tunnel, exports the last 7 days and uploads them to your DM with the bot. Run it before the agenda (or run it, then
 DM `agenda`).
 
@@ -167,3 +171,22 @@ See [`.env.example`](.env.example) for every variable. The useful knobs:
 ## License
 
 [MIT](LICENSE)
+
+## Shared coder-feedback workspace
+
+When `LIME_REVIEW_API_URL`, `LIME_REVIEW_INGEST_KEY`, and `LIME_REVIEW_WEB_URL` are
+configured, the weekday agenda also publishes to Lime's employee-only
+`/coder-feedback` page. Approved scoped answers feed the next agenda. A durable
+background build enriches the shared queue through Lime's read-only evidence API;
+failed builds and batched publications retry every five minutes. Live rejections
+come from the backend, with the existing DM export as a fallback.
+
+Private agency indexes and Megan topics are optional inputs via `AGENCY_DOCS_DIR`
+and `LIME_REVIEW_TOPICS_FILE`; provisioning them is outside this rollout. The
+dashboard retains published context and versioned human decisions without them;
+the classifier cannot consult files absent from the worker. The public CMS index
+is included in the Docker image. Do not commit private documents. Local hub builds
+also publish; `npm run review:publish` imports only existing local caches and
+`npm run review:publish -- --snapshot` replays the saved snapshot. Human decisions
+survive imports. Decisions use the existing reviewed copy/paste flow for Linear;
+saving an answer does not independently close issues or post to Slack.
