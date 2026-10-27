@@ -11,13 +11,17 @@ import path from "node:path";
 import type { AgendaCard } from "../src/agenda/render.js";
 import { loadConfig, type Config } from "../src/config.js";
 import { agencyReference, issueContext, loadAgencyDocs } from "../src/review/agency.js";
-import { classifyIssues, REFERENCE_CAP } from "../src/review/classify.js";
+import { classifyIssues, mergeQuestions, REFERENCE_CAP } from "../src/review/classify.js";
 import { cachedVisits, gatherPack, linearIssue, packVisits, primeLinear } from "../src/review/gather.js";
 import { renderHub } from "../src/review/hub.js";
 import { issueFresh, issueItems, loopIssues } from "../src/review/issues.js";
-import { agendaItem, isFresh, mergeAgendas, parseAgendaHtml, sortItems } from "../src/review/items.js";
+import { agendaItem, explainManual, isFresh, manualBlockCodes, mergeAgendas, parseAgendaHtml, sortItems } from "../src/review/items.js";
+import { loadManual } from "../src/manual/lookup.js";
+import { manualNotes } from "../src/manual/notes.js";
+import { manualBriefs } from "../src/review/brief.js";
+import { condenseQuestions, MAX_QUESTIONS } from "../src/review/questions.js";
 import { ISSUES } from "../src/review/megan-issues.js";
-import { loadTopics, matchTopics, topicBlocks, topicReference, withAnswers, type MeganTopic } from "../src/review/topics.js";
+import { loadTopics, matchTopics, topicQuestions, topicReference, withAnswers, type MeganTopic } from "../src/review/topics.js";
 import type { Item, Pack } from "../src/review/types.js";
 import { withProdDb } from "./prod-db.js";
 
@@ -161,7 +165,6 @@ export async function buildHub({
   // Felipe's Megan meeting spreadsheet (npm run megan-topics): its topics on the issues they match.
   const issuePacks = packs.filter((p) => p.item.origin.kind === "issue");
   const topics = await matchSpreadsheet(issuePacks, config);
-  for (const pack of issuePacks) pack.item.panel.blocks.push(...topicBlocks(topics, pack.item.id));
   if (topics.length) console.log(`spreadsheet: ${topics.filter((t) => t.matches.length).length}/${topics.length} topics matched, ${topics.filter((t) => t.answer).length} answered`);
 
   if (!noClassify) {
@@ -181,6 +184,37 @@ export async function buildHub({
       `classifier: ${t.ready} ready, ${t.needs} needs clarification, ${t.failed} failed, ${t.cached} cache hits, ${packs.filter((p) => p.item.agencySources?.length).length} with agency prefs (${Math.round((Date.now() - started) / 1000)}s)`,
     );
   }
+
+  // The spreadsheet topics' questions join the issue's own questions to resolve (no separate topic cards); an issue
+  // the docs already settle (ready) doesn't reopen them.
+  for (const pack of issuePacks) {
+    const extra = topicQuestions(topics, pack.item.id);
+    if (!extra.length) continue;
+    const t = pack.item.triage;
+    if (t?.classification === "needs-clarification") t.questions = mergeQuestions(t.questions, extra);
+    else if (!t) pack.item.panel.questions = { title: "❓ Questions to resolve", items: mergeQuestions(pack.item.panel.questions?.items ?? [], extra) };
+  }
+
+  // At most MAX_QUESTIONS questions to resolve per item, so a meeting can get through ~20 issues.
+  const condensed = await condenseQuestions(config, packs.map((p) => p.item), CACHE);
+  if (condensed) console.log(`questions condensed to ${MAX_QUESTIONS} on ${condensed} items`);
+
+  // The manual card says what the rule is and what to do, not just where it is (notes are cached per code).
+  const manualIndex = loadManual();
+  const notesConfig = { ...config, DATA_DIR: path.join(CACHE, "data") };
+  const agencyDocs = loadAgencyDocs();
+  const withNotes = [];
+  for (const pack of packs) {
+    if (!pack.item.panel.blocks.some((b) => b.title.includes("CMS OASIS-E2 manual"))) continue;
+    const codes = manualBlockCodes(pack.item);
+    const notes = codes.length ? await manualNotes(notesConfig, codes, { manual: manualIndex }).catch(() => []) : [];
+    const agency = agencyDocs ? agencyReference(agencyDocs, issueContext(pack), 2_500) : null;
+    if (agency && !pack.item.agencySources?.length) pack.item.agencySources = agency.sources;
+    withNotes.push({ item: pack.item, notes, agency: agency?.text });
+  }
+  const briefs = await manualBriefs(config, withNotes, CACHE);
+  for (const { item, notes } of withNotes) explainManual(item, notes, briefs.get(item.id));
+  console.log(`docs briefs: ${briefs.size}/${withNotes.filter((e) => e.notes.length || e.agency).length} (${withNotes.filter((e) => e.agency).length} with agency prefs)`);
 
   const file = path.join(OUT, "index.html");
   fs.writeFileSync(file, renderHub(packs, newest, cards, from, topics));

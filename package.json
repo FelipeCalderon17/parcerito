@@ -19,6 +19,7 @@
     "agenda": "tsx --env-file=.env scripts/open-agenda.ts",
     "agenda:local": "tsx --env-file=.env scripts/agenda-local.ts",
     "hub": "tsx --env-file=.env scripts/review-hub.ts",
+    "decisions": "tsx --env-file=.env scripts/sync-decisions.ts",
     "manual-index": "tsx scripts/manual-index.ts",
     "agency-docs": "tsx scripts/agency-docs.ts",
     "megan-topics": "tsx --env-file=.env scripts/megan-topics.ts",

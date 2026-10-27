@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "../config.js";
-import { CSS, rowsTable, stats, thread, visitCard, linearEvidence } from "./render.js";
+import { CSS, rowsTable, stats, linearEvidence, threadCards, visitCards } from "./render.js";
 import type { Pack, VisitStatus } from "./types.js";
 
 export interface PublishedItem {
@@ -103,8 +103,8 @@ export function publishedPack(pack: Pack, assetsDir?: string): PublishedItem {
 			origin: item.origin.kind === "agenda" ? item.origin.agenda : "Linear feedback loop",
 		},
 		evidence: {
-			reports: embedImages(pack.threads.map(thread).join("") + rowsTable(item.rows ?? []), assetsDir),
-			visits: embedImages(pack.visits.map(visitCard).join(""), assetsDir),
+			reports: embedImages(threadCards(pack.threads) + rowsTable(item.rows ?? []), assetsDir),
+			visits: embedImages(visitCards(pack.visits), assetsDir),
 			linear: linearEvidence(pack),
 			css: CSS,
 		},
@@ -187,6 +187,12 @@ async function flushPending(config: Config): Promise<void> {
 export async function loadReviewDecisions(config: Config): Promise<ApprovedDecision[]> {
 	if (!reviewConfigured(config)) return [];
 	return (await (await reviewRequest(config, "decisions")).json()) as ApprovedDecision[];
+}
+
+/** Answers saved while the item still needs clarification (posted to Linear, never used as approved context). */
+export async function loadOpenDecisions(config: Config): Promise<ApprovedDecision[]> {
+	if (!reviewConfigured(config)) return [];
+	return (await (await reviewRequest(config, "decisions/open")).json()) as ApprovedDecision[];
 }
 
 export function decisionContext(decisions: ApprovedDecision[]): string {

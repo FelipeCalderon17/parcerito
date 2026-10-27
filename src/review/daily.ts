@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "../config.js";
 import { agencyReference, issueContext, loadAgencyDocs } from "./agency.js";
-import { classifyIssues, REFERENCE_CAP } from "./classify.js";
+import { classifyIssues, mergeQuestions, REFERENCE_CAP } from "./classify.js";
+import { condenseQuestions } from "./questions.js";
 import { beginGatherRun, cachedVisits, caseRefs, gatherPack, packText, primeLinear, visitRefs } from "./gather.js";
 import { issueItems, loopIssues } from "./issues.js";
 import { agendaItem, fieldKeys, mergeAgendas, parseAgendaHtml } from "./items.js";
@@ -16,7 +17,7 @@ import {
 	reviewConfigured,
 	reviewRequest,
 } from "./publish.js";
-import { loadTopics, matchTopics, topicBlocks, topicReference, withAnswers } from "./topics.js";
+import { loadTopics, matchTopics, topicQuestions, topicReference, withAnswers } from "./topics.js";
 import type { Pack, VisitData } from "./types.js";
 
 const builds = new Map<string, Promise<void>>();
@@ -112,7 +113,6 @@ async function buildDailyReview(config: Config): Promise<void> {
 		);
 	const decisions = await loadReviewDecisions(config);
 	const agency = loadAgencyDocs();
-	for (const pack of packs) pack.item.panel.blocks.push(...topicBlocks(topics?.topics ?? [], pack.item.id));
 	await classifyIssues(config, packs, {
 		cacheDir: cache,
 		reference: (pack) => {
@@ -128,6 +128,13 @@ async function buildDailyReview(config: Config): Promise<void> {
 			);
 		},
 	});
+	// Spreadsheet topics join the issue's questions to resolve instead of showing as separate cards.
+	for (const pack of packs) {
+		const extra = topicQuestions(topics?.topics ?? [], pack.item.id);
+		const t = pack.item.triage;
+		if (extra.length && t?.classification === "needs-clarification") t.questions = mergeQuestions(t.questions, extra);
+	}
+	await condenseQuestions(config, packs.map((pack) => pack.item), cache);
 	const observedAt = new Date().toISOString();
 	const snapshot = {
 		id: `daily-review:${observedAt}`,

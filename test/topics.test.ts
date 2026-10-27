@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { renderHub } from "../src/review/hub.js";
 import { issueItem } from "../src/review/issues.js";
-import { limeIds, matchTopics, parseTopics, topicBlocks, topicReference, withAnswers, type MatchModel, type MeganTopic } from "../src/review/topics.js";
+import { limeIds, matchTopics, parseTopics, topicQuestions, topicReference, topicsOf, withAnswers, type MatchModel, type MeganTopic } from "../src/review/topics.js";
 import type { LinearIssue, Pack } from "../src/review/types.js";
 import { cellIndex, relTargets, sharedStrings, sheetRows } from "../src/review/xlsx.js";
 
@@ -107,10 +107,10 @@ test("matchTopics: linear-ref, slack-thread via a reply's root, visit via ids in
 
   // One issue, several topics.
   topics.find((t) => t.n === 2)!.matches.push({ issue: "ENG-10", method: "model", why: "w", confidence: "medium" });
-  assert.equal(topicBlocks(topics, "ENG-10").length, 2);
+  assert.equal(topicsOf(topics, "ENG-10").length, 2);
 });
 
-test("topicReference carries Megan's answer only when filled; blocks and the overview section show topics", () => {
+test("topicReference carries Megan's answer only when filled; questions merge in and the overview section shows topics", () => {
   const topics: MeganTopic[] = parseTopics(sheets);
   topics[0]!.matches = [{ issue: "ENG-10", method: "linear-ref" }];
   topics[1]!.matches = [{ issue: "ENG-10", method: "slack-thread" }, { issue: "ENG-20", method: "slack-thread" }];
@@ -125,10 +125,8 @@ test("topicReference carries Megan's answer only when filled; blocks and the ove
   // No answer: the agency reference is untouched, so the classifier cache keeps hitting.
   assert.equal(withAnswers(topicReference(topics, "ENG-10"), agency), agency);
 
-  const [block] = topicBlocks(topics, "ENG-20");
-  assert.equal(block!.title, "📋 Megan spreadsheet (10-21) · topic #2");
-  assert.match(block!.text, /Surgical\?/);
-  assert.doesNotMatch(block!.text, /Megan's answer/);
+  // The topic's questions join the issue's questions to resolve (no separate topic card).
+  assert.ok(topicQuestions(topics, "ENG-20").some((q) => /Surgical\?/.test(q)));
 
   const html = renderHub([packOf(linear({ identifier: "ENG-10" }))], "2026-10-22", new Map(), "2026-10-22", topics);
   assert.match(html, /Spreadsheet topics/);

@@ -417,30 +417,15 @@ export async function matchTopics(
 
 // ---------- hub ----------
 
-const METHODS: Record<MatchMethod, string> = {
-  "linear-ref": "the topic names this issue",
-  "slack-thread": "same Slack thread",
-  visit: "same Lime case/visit/task",
-  model: "Claude match",
-};
-
 /** The topics matched to one issue. */
 export const topicsOf = (topics: MeganTopic[], issue: string) => topics.filter((t) => t.matches.some((m) => m.issue === issue));
 
-/** An issue page's panel block per matched topic: topic, questions, Megan's answer and next step when filled, how it matched. */
-export function topicBlocks(topics: MeganTopic[], issue: string): { cls: string; title: string; text: string }[] {
-  return topicsOf(topics, issue).map((t) => {
-    const m = t.matches.find((x) => x.issue === issue)!;
-    const how = `Matched: ${METHODS[m.method]}${m.why ? ` (${m.confidence}: ${m.why})` : ""}`;
-    const parts = [
-      `${t.topic}${t.fields ? `\nFields: ${t.fields}` : ""}${t.org ? `\nOrg · EHR: ${t.org}` : ""}`,
-      t.questions ? `Questions for Megan:\n${t.questions}` : "",
-      t.answer ? `Megan's answer:\n${t.answer}` : "",
-      t.nextStep ? `Next step:\n${t.nextStep}` : "",
-      how,
-    ];
-    return { cls: "megan-topic", title: `📋 Megan spreadsheet (10-21) · topic #${t.n}`, text: parts.filter(Boolean).join("\n\n") };
-  });
+/** The questions of the spreadsheet topics an issue matches, one per line (bullets and numbering stripped). */
+export function topicQuestions(topics: MeganTopic[], issue: string): string[] {
+  return topicsOf(topics, issue)
+    .flatMap((t) => t.questions.split(/\n+/))
+    .map((q) => q.replace(/^\s*(?:[-•*]|\d+[.)])\s*/, "").trim())
+    .filter(Boolean);
 }
 
 /** Megan's spreadsheet answers on an issue's topics, as classifier reference; null when none is filled. */

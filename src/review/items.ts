@@ -173,7 +173,7 @@ export function cmsBlock(card: AgendaCard, manual: ManualIndex | null): Item["pa
   return manualBlock(ownText(card), rowKeys, manual);
 }
 
-const manualPanel = (text: string) => [{ cls: "manual", title: "📘 CMS OASIS-E2 manual", text }];
+const manualPanel = (text: string) => [{ cls: "manual", title: MANUAL_TITLE, text }];
 
 /**
  * The deterministic manual block for a text and extra form keys: per resolved code `CODE Title · p.X–Y`, else the
@@ -184,6 +184,49 @@ export function manualBlock(own: string, keys: string[], manual: ManualIndex | n
   if (items.length) return manualPanel(items.map((i) => `${i.code} ${i.title} · ${pageRange(i.pages)}`).join("\n"));
   if (fieldKeys(own).lime.length) return manualPanel("Agency field (lime.*) — not in the CMS manual");
   return [];
+}
+
+const MANUAL_TITLE = "📘 CMS OASIS-E2 manual";
+/** The manual card once it carries the brief over the manual and the agency prefs. */
+const DOCS_TITLE = "📘 What the docs say (CMS manual + agency prefs)";
+const TRIAGE_VERDICT = { ...CMS_VERDICT, "n/a": "Not a manual question" } as const;
+
+/** The item codes a deterministic manual block lists (`CODE Title · p.X–Y` lines). */
+export function manualBlockCodes(item: Pick<Item, "panel">): string[] {
+  const block = item.panel.blocks.find((b) => b.title === MANUAL_TITLE);
+  return block ? [...block.text.matchAll(/^([A-Z]{1,2}\d{4}[A-Z]?\d?) /gm)].map((m) => m[1]!) : [];
+}
+
+/**
+ * Turns the manual block from "where it is" into "what it says and what we should do": a one-paragraph brief when
+ * there is one, else the classifier's conclusion
+ * (verdict, reason, next step, agency prefs used) first, then each item's rule notes with their pages.
+ */
+export function explainManual(
+  item: Item,
+  notes: { code: string; title: string; pages: [number, number]; notes: string }[],
+  brief?: string,
+): void {
+  const block = item.panel.blocks.find((b) => b.title === MANUAL_TITLE);
+  if (!block) return;
+  // The short brief (brief.ts) replaces the long notes; one line keeps where each item is.
+  if (brief) {
+    block.title = DOCS_TITLE;
+    const where = [
+      notes.length ? `Manual: ${notes.map((n) => `${n.code} ${pageRange(n.pages)}`).join(" · ")}` : "",
+      item.agencySources?.length ? `Agency prefs: ${item.agencySources.join("; ")}` : "",
+    ];
+    block.text = [brief, ...where].filter(Boolean).join("\n\n");
+    return;
+  }
+  const t = item.triage;
+  const conclusion = t
+    ? [`${TRIAGE_VERDICT[t.manualVerdict]} — ${t.reason}`, t.nextStep ? `→ What to do: ${t.nextStep}` : ""]
+    : [];
+  const prefs = item.agencySources?.length ? [`Agency prefs used: ${item.agencySources.join("; ")}`] : [];
+  const rules = notes.map((n) => `${n.code} ${n.title} · ${pageRange(n.pages)}\n${n.notes}`);
+  if (!conclusion.length && !rules.length) return;
+  block.text = [...conclusion, ...prefs, ...(rules.length ? rules : [block.text])].filter(Boolean).join("\n\n");
 }
 
 function cmsText(cms: CardCms): string {

@@ -116,6 +116,24 @@ export class LinearClient {
     });
   }
 
+  /** Moves an issue to the team's Todo state, in the active cycle, assigned to the API key's owner. */
+  async moveToTodo(identifier: string): Promise<void> {
+    const data = await this.gql<{
+      viewer: { id: string };
+      issue: { id: string; team: { states: { nodes: { id: string; name: string; type: string }[] }; activeCycle: { id: string } | null } };
+    }>(
+      `query ($id: String!) { viewer { id } issue(id: $id) { id team { states { nodes { id name type } } activeCycle { id } } } }`,
+      { id: identifier },
+    );
+    const states = data.issue.team.states.nodes;
+    const todo = states.find((s) => s.name.toLowerCase() === "todo") ?? states.find((s) => s.type === "unstarted");
+    if (!todo) throw new Error(`No Todo state on ${identifier}'s team`);
+    await this.gql(`mutation ($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`, {
+      id: data.issue.id,
+      input: { stateId: todo.id, assigneeId: data.viewer.id, ...(data.issue.team.activeCycle ? { cycleId: data.issue.team.activeCycle.id } : {}) },
+    });
+  }
+
   private teamInfo?: Promise<{ teamId: string; triageStateId?: string }>;
   private team() {
     this.teamInfo ??= this.gql<{

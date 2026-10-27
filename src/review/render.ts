@@ -102,7 +102,7 @@ export function fieldCard(f: Record<string, any>, clinician: string): string {
     ${rows(f.feedback).map((fb) => `<div class="callout info"><b>${person(fb.by)}</b> ${esc(fb.message)} <span class="muted small">${when(fb.at)}</span></div>`).join("")}
     ${answers.some((a) => a.push_error) ? `<div class="callout bad"><b>Push error</b> ${esc(answers.find((a) => a.push_error)!.push_error)}</div>` : ""}
     <div class="sub">Evidence the AI cited</div>${evidence(rows(f.evidence))}
-    ${answers.length > 1 ? `<details class="inner"><summary>Answer history (${answers.length})</summary><ol class="hist">${answers.map((a) => `<li><b>${val(a.value)}</b> <span class="muted">${esc(a.source)}${a.by ? ` · ${person(a.by)}` : ""} · ${when(a.at)}${a.pushed_at ? ` · pushed` : ""}</span></li>`).join("")}</ol></details>` : ""}
+    ${answers.length > 1 ? `<details class="inner"><summary>Answer history (${answers.length})</summary><ol class="hist">${[...answers].reverse().map((a) => `<li><b>${val(a.value)}</b> <span class="muted">${esc(a.source)}${a.by ? ` · ${person(a.by)}` : ""} · ${when(a.at)}${a.pushed_at ? ` · pushed` : ""}</span></li>`).join("")}</ol></details>` : ""}
     ${prompt(f.prompt_field_line, f.prompt_instructions, f.step_key)}
   </article>`;
 }
@@ -175,7 +175,8 @@ export function noSuggestionCard(u: Record<string, any>, steps: Record<string, a
   const [status, kind] = stepStatus(last);
   const answers = rows(u.answers);
   const final = answers.at(-1);
-  const attempts = steps
+  const attempts = [...steps]
+    .reverse()
     .map((s) => {
       const [st, k] = stepStatus(s);
       const notes = [
@@ -200,7 +201,7 @@ export function noSuggestionCard(u: Record<string, any>, steps: Record<string, a
     ${rows(u.feedback).map((fb) => `<div class="callout info"><b>${person(fb.by)}</b> ${esc(fb.message)} <span class="muted small">${when(fb.at)}</span></div>`).join("")}
     ${seenEvidence(u.key, u.label ?? "", seen.filter((x) => x.key === u.key), steps.length > 0)}
     ${steps.length ? `<details class="inner"><summary>Every time the AI was asked (${steps.length})</summary><ol class="hist">${attempts}</ol></details>` : ""}
-    ${answers.length > 1 ? `<details class="inner"><summary>Answer history (${answers.length})</summary><ol class="hist">${answers.map((a) => `<li><b>${val(a.value)}</b> <span class="muted">${esc(a.source)}${a.by ? ` · ${person(a.by)}` : ""} · ${when(a.at)}</span></li>`).join("")}</ol></details>` : ""}
+    ${answers.length > 1 ? `<details class="inner"><summary>Answer history (${answers.length})</summary><ol class="hist">${[...answers].reverse().map((a) => `<li><b>${val(a.value)}</b> <span class="muted">${esc(a.source)}${a.by ? ` · ${person(a.by)}` : ""} · ${when(a.at)}</span></li>`).join("")}</ol></details>` : ""}
     ${last ? prompt(last.prompt_field_line, last.prompt_instructions, last.step_key) : ""}
   </article>`;
 }
@@ -252,7 +253,7 @@ export function visitCard(v: VisitData): string {
     <div class="chips">${chips.map((c) => `<span class="chip">${c}</span>`).join("")}</div>
     ${err(v.data.task)}${err(v.data.fields)}${err(v.data.no_suggestion_steps)}
     ${summary}
-    ${fields.length ? `<div class="sub">AI suggestions (${fields.length})</div>${fields.map((f) => fieldCard(f, clinician)).join("")}` : ""}
+    ${fields.length ? `<div class="sub">AI suggestions (${fields.length})</div>${newestFirst(fields, (f) => f.created_at).map((f) => fieldCard(f, clinician)).join("")}` : ""}
     ${unanswered.length ? `<div class="sub">Fields with no AI suggestion (${unanswered.length})</div>${unanswered.map((u) => noSuggestionCard(u, steps.filter((s) => s.key === u.key), clinician, rows(v.data.seen_evidence))).join("")}` : ""}
     ${other.length ? `<details class="inner"><summary>Other rejections on this visit (${other.length})</summary>${other.map((f) => fieldCard(f, clinician)).join("")}</details>` : ""}
   </section>`;
@@ -270,11 +271,48 @@ export function stats(p: Pack) {
 }
 
 /** One Slack thread with avatars, screenshots and file names. */
+/** Newest first, by an ISO date or Slack ts; items without a date go last. */
+export function newestFirst<T>(list: T[], at: (x: T) => unknown): T[] {
+  return [...list].sort((a, b) => String(at(b) ?? "").localeCompare(String(at(a) ?? "")));
+}
+
+/** Threads with the most recent activity first. */
+export const newestThreads = (threads: SlackThread[]) => newestFirst(threads, (t) => t.messages.at(-1)?.ts ?? t.ref.ts);
+
+/** Most Slack threads a page shows (umbrella issues link dozens; their screenshots made snapshots too big to send). */
+export const MAX_THREADS = 10;
+
+/** The newest MAX_THREADS threads, plus a note on how many older ones were left out. */
+export function threadCards(threads: SlackThread[]): string {
+  const sorted = newestThreads(threads);
+  const hidden = sorted.length - MAX_THREADS;
+  return (
+    sorted.slice(0, MAX_THREADS).map(thread).join("") +
+    (hidden > 0 ? `<div class="empty">+ ${hidden} older Slack thread${hidden === 1 ? "" : "s"} not shown (newest ${MAX_THREADS} above).</div>` : "")
+  );
+}
+
+/** Visits by visit date, most recent first. */
+export const newestVisits = (visits: VisitData[]) => newestFirst(visits, (v) => rows(v.data.task)[0]?.visit_date);
+
+/** Most visits a page shows: umbrella issues link dozens, and the latest ones are what the review needs. */
+export const MAX_VISITS = 10;
+
+/** The newest MAX_VISITS visit cards, plus a note on how many older ones were left out. */
+export function visitCards(visits: VisitData[]): string {
+  const sorted = newestVisits(visits);
+  const hidden = sorted.length - MAX_VISITS;
+  return (
+    sorted.slice(0, MAX_VISITS).map(visitCard).join("") +
+    (hidden > 0 ? `<div class="empty">+ ${hidden} older visit${hidden === 1 ? "" : "s"} not shown (newest ${MAX_VISITS} above).</div>` : "")
+  );
+}
+
 export function thread(t: SlackThread): string {
   return `<div class="thread">
     <div class="thead"><span class="muted small">Slack thread</span><a href="${esc(t.link)}" target="_blank">Open in Slack ↗</a></div>
     ${t.error ? `<div class="callout bad">Couldn't read this thread (${esc(t.error)}), the bot may not be in the channel.</div>` : ""}
-    ${t.messages
+    ${newestFirst(t.messages, (m) => m.ts.padStart(20, "0"))
       .map((m) => {
         const bot = /dotterino|parcerito|bot/i.test(m.author);
         return `<div class="msg ${bot ? "bot" : ""}"><div class="avatar">${esc(initials(m.author))}</div><div class="mbody">
@@ -293,7 +331,7 @@ export function rowsTable(list: DbRow[]): string {
   if (!list.length) return "";
   return `<div class="thread"><div class="thead"><span class="muted small">Rejected AI suggestions (${list.length})</span></div>
     <table class="grid"><thead><tr><th>Field</th><th>AI → coder</th><th>Reason</th><th>Decided by</th><th>Visit</th></tr></thead><tbody>
-    ${list
+    ${newestFirst(list, (r) => r.decidedAt)
       .map(
         (r) => `<tr><td><code>${esc(r.field)}</code><div class="muted small">${esc(r.form)}${r.customer ? ` · ${esc(r.customer)}` : ""}</div></td>
       <td>${val(r.aiValue)} → ${val(r.coderValue)}<div class="muted small">${esc(r.how)}</div></td><td>${r.reason ? esc(r.reason) : `<span class="muted">none</span>`}</td>
@@ -305,7 +343,7 @@ export function rowsTable(list: DbRow[]): string {
 }
 
 const linearBody = (l: LinearIssue) =>
-  `<div class="md">${esc(l.description)}</div>${l.comments.nodes.map((c) => `<div class="comment"><div class="mhead"><b>${esc(c.user?.name ?? "")}</b><span class="muted small">${when(c.createdAt)}</span></div><div class="md">${esc(c.body)}</div></div>`).join("")}`;
+  `<div class="md">${esc(l.description)}</div>${newestFirst(l.comments.nodes, (c) => c.createdAt).map((c) => `<div class="comment"><div class="mhead"><b>${esc(c.user?.name ?? "")}</b><span class="muted small">${when(c.createdAt)}</span></div><div class="md">${esc(c.body)}</div></div>`).join("")}`;
 
 /** The Linear tab: one issue as-is, several each under a heading. */
 export function linearEvidence(p: Pack): string {
@@ -355,8 +393,8 @@ export function issuePage(p: Pack, i: number, total: number, opts: { aside?: str
   <div class="layout">
     <div class="content">${p.errors.map((e) => `<div class="callout bad">${esc(e)}</div>`).join("")}
       <nav class="tabs"><button data-tab="reports" class="on">Reports</button><button data-tab="visits">Visits &amp; AI (${p.visits.length})</button><button data-tab="linear">Linear notes</button></nav>
-      <div class="tab" data-tab="reports">${p.threads.map(thread).join("") + rowsTable(item.rows ?? []) || `<div class="empty">No Slack thread linked from the issue.</div>`}</div>
-      <div class="tab" data-tab="visits" hidden>${p.visits.map(visitCard).join("") || `<div class="empty">The reports don't link a specific visit. This is a general request, so the decision is about the rule, not a chart.</div>`}</div>
+      <div class="tab" data-tab="reports">${threadCards(p.threads) + rowsTable(item.rows ?? []) || `<div class="empty">No Slack thread linked from the issue.</div>`}</div>
+      <div class="tab" data-tab="visits" hidden>${visitCards(p.visits) || `<div class="empty">The reports don't link a specific visit. This is a general request, so the decision is about the rule, not a chart.</div>`}</div>
       <div class="tab" data-tab="linear" hidden>${linearEvidence(p)}</div>
     </div>
     <aside class="panel">

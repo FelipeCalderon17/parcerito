@@ -8,7 +8,9 @@ import { cachedVisits, packSlackRefs, packVisits, visitRefs, packText, caseRefs 
 import { inScope, issueItems } from "../src/review/issues.js";
 import { publishedPack, publishReview } from "../src/review/publish.js";
 import { ISSUES } from "../src/review/megan-issues.js";
-import { topicBlocks, loadTopics } from "../src/review/topics.js";
+import { topicQuestions, loadTopics } from "../src/review/topics.js";
+import { mergeQuestions } from "../src/review/classify.js";
+import { condenseQuestions } from "../src/review/questions.js";
 import type { LinearIssue, Pack, SlackThread, Triage } from "../src/review/types.js";
 import { withProdDb } from "./prod-db.js";
 import { agendaFilesIn, agendaItemsOf } from "./hub-build.js";
@@ -61,9 +63,12 @@ if (process.argv.includes("--snapshot")) {
 		const pack = { item, linear, threads, visits, errors };
 		const classification = read<{ triage: Triage }>(path.join(cache, "classify", `${item.id}.json`));
 		if (classification) applyTriage(pack, classification.triage);
-		item.panel.blocks.push(...topicBlocks(topics, item.id));
+		const extra = topicQuestions(topics, item.id);
+		const t = item.triage;
+		if (extra.length && t?.classification === "needs-clarification") t.questions = mergeQuestions(t.questions, extra);
 		return pack;
 	});
+	await condenseQuestions(config, packs.map((pack) => pack.item), cache);
 	const hydrate = process.argv.includes("--hydrate");
 	if (hydrate)
 		await withProdDb(async (query) => {
