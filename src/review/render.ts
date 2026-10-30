@@ -116,7 +116,7 @@ const ABSTAIN_WHY: Record<string, string> = {
   "never asked": "This field was never sent to the model on this visit.",
 };
 
-function stepStatus(s: Record<string, any> | undefined): [string, string] {
+export function stepStatus(s: Record<string, any> | undefined): [string, string] {
   if (!s) return ["never asked", "muted"];
   if (s.gated) return ["skipped by rule", "info"];
   if (s.document_only) return ["document only", "info"];

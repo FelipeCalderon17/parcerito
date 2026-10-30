@@ -126,8 +126,31 @@ reason, instead of becoming agenda items. Run `npm run agenda` on your machine t
 `AGENDA_LOCAL_DIR`, build the local review hub (every agenda plus Megan's issues, with the linked visits pulled
 read-only from production) and open it in your browser. `--no-db` skips the production pull (cached visits only),
 `--agenda-only` just opens the agenda; `npm run hub` rebuilds the hub alone. The hub holds PHI, so it stays on your
-machine (`~/Desktop/Lime/review-hub`). When shared review publishing is configured,
-its contents are also sent to the authenticated Lime workspace described below.
+machine (`~/Desktop/Lime/review-hub`).
+
+### Tracking in Linear Triage
+
+Agenda issues are tracked in Linear (the Lime dashboard is retired; `--publish` still sends the hub there):
+
+- **Titles** start with `[Agenda - YYYY-MM-DD] `, the newest agenda the issue was on. Issues parcerito files get it
+  at creation; existing issues an agenda item points to are renamed (an older prefix is replaced, never stacked; a
+  newer one is kept).
+- **One "Agenda review — YYYY-MM-DD" comment** per issue and agenda date (marker
+  `<!-- parcerito:agenda-review:YYYY-MM-DD -->`, updated in place). The Railway run posts the triage (summary,
+  proposal, CMS verdict) — new issues get it in their description — and keeps the "More reports of this from Slack"
+  comments. The local `npm run agenda` then replaces it with the full review: triage, classification, what the docs
+  say, questions to resolve, possible duplicates, Slack reports, rejected AI suggestions and the newest 10 visits
+  (AI value → final answer, who decided, reason, cited evidence; for fields without a suggestion, why and what the
+  AI saw). It holds PHI by design and is capped at ~60k characters (oldest visits/fields trimmed with a "+N" line).
+  Closed issues are left alone, and each issue prints one line (`✓ ENG-123 renamed + review updated`).
+- **Flags** (`npm run agenda` and `npm run hub`): `--linear-dry-run` writes nothing and saves what it would send to
+  `review-hub/linear-dry-run/` (mutations + each comment), `--no-linear` skips Linear, `--publish` also publishes
+  to the Lime dashboard. `LINEAR_DRY_RUN=1` turns every Linear write (Railway, `agenda:local`, scripts) into a log line.
+- **Duplicates**: each run compares the newest agenda's issues with the open loop issues (shared Slack thread or
+  visit, shared OASIS codes and title words), asks Claude about the candidates (cached), lists them at the end and
+  in the review comment. Nothing is marked automatically: `npm run duplicates` lists the high-confidence pairs from
+  the last run; `npm run duplicates -- --apply` asks y/N, then marks the newer issue Duplicate of the older one
+  (relation, Duplicate state, comment). `--all` also lists medium/low pairs.
 
 Each window starts where the previous scheduled run ended (Mondays cover the weekend); the very first one starts at
 `AGENDA_BACKFILL_SINCE`. DM `agenda` to build one on demand without moving the window. Needs `LINEAR_API_KEY`.
@@ -137,6 +160,12 @@ value in production, grouped into patterns with proposed prompt changes. Without
 production reads use your AWS SSO login: `npm run rejected-fields` logs in if needed, opens the database
 tunnel, exports the last 7 days and uploads them to your DM with the bot. Run it before the agenda (or run it, then
 DM `agenda`).
+
+
+**Weekday schedule (local).** `scripts/agenda-scheduled.sh` runs `npm run agenda -- --no-open` at 10:10 on weekdays via a
+launchd agent (`~/Library/LaunchAgents/com.parcerito.agenda.plist`, log in `~/Desktop/Lime/review-hub/scheduled.log`).
+It waits up to 30 min for today's agenda in the DM; if the AWS SSO session has expired it runs with `--no-db`
+(triage only, no prod evidence). Log in to AWS before 10 to get the full review.
 
 ## Local development
 
@@ -186,7 +215,7 @@ and `LIME_REVIEW_TOPICS_FILE`; provisioning them is outside this rollout. The
 dashboard retains published context and versioned human decisions without them;
 the classifier cannot consult files absent from the worker. The public CMS index
 is included in the Docker image. Do not commit private documents. Local hub builds
-also publish; `npm run review:publish` imports only existing local caches and
+publish only with `--publish`; `npm run review:publish` imports only existing local caches and
 `npm run review:publish -- --snapshot` replays the saved snapshot. Human decisions
 survive imports. Decisions use the existing reviewed copy/paste flow for Linear;
 saving an answer does not independently close issues or post to Slack.

@@ -185,7 +185,7 @@ function linksCard(title: string, list: Pack[]): string {
       <div class="card xlinks"><div class="ctitle">${esc(title)}</div>${list.map((p) => `<a href="#${p.item.id}"><b>${esc(p.item.origin.kind === "issue" ? p.item.id : originChip(p))}</b> ${esc(p.item.title)}</a>`).join("")}</div>`;
 }
 
-const KINDS: Record<Triage["kind"], string> = {
+export const KINDS: Record<Triage["kind"], string> = {
   "coding-rule": "Coding rule",
   "prompt-behaviour": "Prompt behaviour",
   "ehr-push": "EHR push",
@@ -193,7 +193,7 @@ const KINDS: Record<Triage["kind"], string> = {
   request: "Request",
   other: "Other",
 };
-const VERDICTS: Record<Triage["manualVerdict"], [string, string]> = {
+export const VERDICTS: Record<Triage["manualVerdict"], [string, string]> = {
   covered: ["Manual: covered", "good"],
   partial: ["Manual: partial", "warn"],
   "not-in-manual": ["Not in manual", "bad"],

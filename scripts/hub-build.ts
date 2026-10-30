@@ -8,7 +8,10 @@ import { publishReview, publishedPack, loadReviewDecisions, decisionContext } fr
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { LinearClient } from "../src/agenda/linear.js";
 import type { AgendaCard } from "../src/agenda/render.js";
+import { findDuplicates, type DuplicatePair } from "../src/review/duplicates.js";
+import { reviewTargets, syncReviews } from "../src/review/linear-review.js";
 import { loadConfig, type Config } from "../src/config.js";
 import { agencyReference, issueContext, loadAgencyDocs } from "../src/review/agency.js";
 import { classifyIssues, mergeQuestions, REFERENCE_CAP } from "../src/review/classify.js";
@@ -31,6 +34,20 @@ const CACHE = path.join(OUT, "cache");
 const ASSETS = path.join(OUT, "assets");
 /** Issue id → Linear `updatedAt` of the copy last gathered, to skip unchanged issues' Slack/visit refetch. */
 const SEEN = path.join(CACHE, "issues-seen.json");
+/** The last run's likely duplicate issues, read by `npm run duplicates`. */
+export const DUPLICATES_FILE = path.join(OUT, "duplicates.json");
+/** Dry-run output: every mutation it would send, and each rendered review comment (PHI, stays local). */
+const DRY_RUN_DIR = path.join(OUT, "linear-dry-run");
+
+/** What the last run saved for `npm run duplicates`. */
+export interface DuplicatesFile {
+  generatedAt: string;
+  agenda: string;
+  pairs: DuplicatePair[];
+  /** Issue id → createdAt / title, to pick the newer one and show what each is. */
+  issues: Record<string, { title: string; createdAt?: string; url?: string }>;
+}
+
 /** The parsed Megan meeting spreadsheet (npm run megan-topics), with its topic → issue matches. */
 export const TOPICS_FILE = path.join(OUT, "megan-topics.json");
 
@@ -91,20 +108,35 @@ export async function matchSpreadsheet(packs: Pack[], config: Pick<Config, "CLAU
   return file.topics;
 }
 
+/** Linear write mode of a hub build: write (default), dry-run (print what it would post) or off. */
+export type LinearMode = "write" | "dry-run" | "off";
+
+/** `--no-linear` / `--linear-dry-run` / `--publish` from a command line. */
+export function hubFlags(argv: string[]): { linear: LinearMode; publish: boolean } {
+  const linear = argv.includes("--no-linear") ? "off" : argv.includes("--linear-dry-run") ? "dry-run" : "write";
+  return { linear, publish: argv.includes("--publish") };
+}
+
 /**
  * Gathers every agenda item and feedback-loop issue, pulls their visits (or reads them from cache with `noDb`),
- * classifies the issues (skipped with `noClassify`: Part-1 placeholder classes), writes the hub and returns its path.
+ * classifies the issues (skipped with `noClassify`: Part-1 placeholder classes), flags likely duplicates, writes the
+ * hub, then updates the newest agenda's Linear issues (title prefix + "Agenda review" comment; see `linear`) and,
+ * only with `publish`, the Lime dashboard. Returns the hub's path.
  */
 export async function buildHub({
   agendaFiles,
   noDb,
   since,
   noClassify = false,
+  linear = "write",
+  publish = false,
 }: {
   agendaFiles: string[];
   noDb: boolean;
   since?: string;
   noClassify?: boolean;
+  linear?: LinearMode;
+  publish?: boolean;
 }): Promise<string> {
   for (const dir of [OUT, CACHE, ASSETS]) fs.mkdirSync(dir, { recursive: true });
   const dirs = { cache: CACHE, assets: ASSETS };
@@ -127,7 +159,8 @@ export async function buildHub({
   const seen = fs.existsSync(SEEN) ? (JSON.parse(fs.readFileSync(SEEN, "utf8")) as Record<string, string>) : {};
   // Issues on the newest agenda refetch like its items; the rest only when Linear changed them (see issueFresh).
   const onFreshAgenda = new Set(agendaItems.filter((i) => isFresh(i, newest)).flatMap((i) => i.linear));
-  const fresh = (item: Item) => (item.origin.kind === "issue" ? issueFresh(item, seen, onFreshAgenda) : isFresh(item, from));
+  // Only the newest agenda refetches; `since` just decides which items show in Today (older ones reuse their cache).
+  const fresh = (item: Item) => (item.origin.kind === "issue" ? issueFresh(item, seen, onFreshAgenda) : isFresh(item, newest));
 
   const all = sortItems([...agendaItems, ...issues]);
   const packs: Pack[] = [];
@@ -216,6 +249,8 @@ export async function buildHub({
   for (const { item, notes } of withNotes) explainManual(item, notes, briefs.get(item.id));
   console.log(`docs briefs: ${briefs.size}/${withNotes.filter((e) => e.notes.length || e.agency).length} (${withNotes.filter((e) => e.agency).length} with agency prefs)`);
 
+  const duplicates = await flagDuplicates(config, packs, newest);
+
   const file = path.join(OUT, "index.html");
   fs.writeFileSync(file, renderHub(packs, newest, cards, from, topics));
   const snapshot = { id: `hub:${newest}`, observedAt: new Date().toISOString(),
@@ -223,6 +258,62 @@ export async function buildHub({
     activeIssueIds: packs.filter(pack => pack.item.origin.kind === 'issue').map(pack => `issue:${pack.item.id}`),
     items: packs.map(pack => publishedPack(pack,ASSETS)) };
   fs.writeFileSync(path.join(OUT,'review-snapshot.json'),JSON.stringify(snapshot));
-  await publishReview(config,snapshot).catch(() => console.warn('Lime publish failed; snapshot saved in review-outbox.'));
+  // The Lime dashboard is retired in favour of Linear Triage: publishing is opt-in (--publish).
+  if (publish) await publishReview(config,snapshot).catch(() => console.warn('Lime publish failed; snapshot saved in review-outbox.'));
+
+  if (linear !== "off") await updateLinear(config, packs, newest, cards, duplicates, linear === "dry-run");
+  printDuplicates(duplicates);
   return file;
+}
+
+/** Likely duplicates of the newest agenda's issues among the loaded open issues; saved for `npm run duplicates`. */
+async function flagDuplicates(config: Config, packs: Pack[], newest: string): Promise<DuplicatePair[]> {
+  const targets = packs.filter((p) => p.item.origin.kind === "agenda" && p.item.origin.agenda === newest).flatMap((p) => p.item.linear);
+  const pool = packs.filter((p) => p.item.origin.kind === "issue").map((p) => p.item.id);
+  const { pairs, checked, calls } = await findDuplicates(config, packs, { targets, pool, cacheDir: CACHE });
+  console.log(`duplicates: ${pairs.length} likely pairs (${checked} issues with candidates, ${calls} Claude calls)`);
+  const issues: DuplicatesFile["issues"] = {};
+  for (const l of packs.flatMap((p) => p.linear)) issues[l.identifier] = { title: l.title, createdAt: l.createdAt ?? issues[l.identifier]?.createdAt, url: l.url };
+  const saved: DuplicatesFile = { generatedAt: new Date().toISOString(), agenda: newest, pairs, issues };
+  fs.writeFileSync(DUPLICATES_FILE, JSON.stringify(saved, null, 2));
+  return pairs;
+}
+
+function printDuplicates(pairs: DuplicatePair[]): void {
+  if (!pairs.length) return;
+  console.log(`\nPossible duplicates (npm run duplicates to review):`);
+  for (const p of pairs) console.log(`  ${p.a} ↔ ${p.b} (${p.confidence}: ${p.why})`);
+}
+
+/**
+ * Title prefix + full "Agenda review" comment on each open issue of the newest agenda. A dry run writes nothing to
+ * Linear: it saves the mutations it would send and each comment under review-hub/linear-dry-run/.
+ */
+async function updateLinear(
+  config: Config,
+  packs: Pack[],
+  newest: string,
+  cards: Map<string, AgendaCard>,
+  duplicates: DuplicatePair[],
+  dryRun: boolean,
+): Promise<void> {
+  if (!config.LINEAR_API_KEY) return console.warn("LINEAR_API_KEY not set: skipping the Linear agenda reviews");
+  const targets = reviewTargets(packs, newest, cards);
+  const mutations = path.join(DRY_RUN_DIR, "mutations.log");
+  const client = new LinearClient(config.LINEAR_API_KEY, config.LINEAR_TEAM_KEY, {
+    dryRun,
+    log: (line) => fs.appendFileSync(mutations, `${line}\n`),
+  });
+  // LINEAR_DRY_RUN=1 also makes it a dry run.
+  if (client.dryRun) {
+    fs.rmSync(DRY_RUN_DIR, { recursive: true, force: true });
+    fs.mkdirSync(DRY_RUN_DIR, { recursive: true });
+  }
+  console.log(`\nLinear: ${targets.length} agenda issues${client.dryRun ? ` (dry run → ${DRY_RUN_DIR})` : ""}`);
+  const tally = await syncReviews(client, targets, {
+    date: newest,
+    duplicates,
+    onBody: client.dryRun ? (id, body) => fs.writeFileSync(path.join(DRY_RUN_DIR, `${id}.md`), body) : undefined,
+  });
+  console.log(`Linear: ${tally.renamed} renamed, ${tally.written} reviews ${client.dryRun ? "would be " : ""}written, ${tally.unchanged} unchanged, ${tally.failed} failed`);
 }

@@ -9,7 +9,8 @@ import { manualItems, oasisCodes } from "../manual/codes.js";
 import { loadManual } from "../manual/lookup.js";
 import { cardCms, describeNotes, manualNotes, type ManualNote } from "../manual/notes.js";
 import { collectConversations, type Conversation } from "./collect.js";
-import { issuesFor, LinearClient, sourceFooter, type LinkedIssue } from "./linear.js";
+import { isTriageOnly, triageReview, triageSection, type TriageCard } from "../review/linear-review.js";
+import { agendaTitle, isReviewComment, issuesFor, LinearClient, sourceFooter, type LinkedIssue } from "./linear.js";
 import { describeRejected, loadRejectedFields, type RejectedExport } from "./rejected.js";
 import { renderAgenda, type AgendaItem } from "./render.js";
 import {
@@ -20,7 +21,7 @@ import {
   type CarriedCard,
   type SyncPayload,
 } from "./sync.js";
-import { triageConversations } from "./triage.js";
+import { SECTIONS, triageConversations, type TriageItem } from "./triage.js";
 
 // Same lookback the collector uses for threads that get new replies; issues citing them are at least this recent.
 const LINEAR_LOOKBACK_MS = 8 * 24 * 3600 * 1000;
@@ -79,7 +80,7 @@ export class DailyAgenda {
     const tick = () => this.tick().catch((error) => console.error("[agenda] scheduler tick failed", error));
     setInterval(tick, 60_000);
     void tick();
-    console.log(`[agenda] scheduled weekdays at ${this.config.AGENDA_TIME} ${this.config.AGENDA_TIMEZONE}`);
+    console.log(`[agenda] scheduled weekdays at ${this.config.AGENDA_TIME} ${this.config.AGENDA_TIMEZONE}${this.linear.dryRun ? " (Linear dry run: no writes)" : ""}`);
   }
 
   private async tick(): Promise<void> {
@@ -188,18 +189,21 @@ export class DailyAgenda {
 
     const created: LinkedIssue[] = [];
     const items: AgendaItem[] = [];
+    const reviews: { issue: AgendaItem["issues"][number]; card: TriageCard }[] = [];
     for (const { linear, ...item } of triage.items) {
       const sources = item.conversationIds.map((id) => byId.get(id)).filter((c): c is Conversation => Boolean(c));
       const untracked = sources.filter((c) => !trackedIn.get(c.id)?.length);
       const issues = new Map<string, AgendaItem["issues"][number]>();
       for (const c of sources) for (const i of trackedIn.get(c.id) ?? []) issues.set(i.identifier, i);
       let linearNote: string | undefined;
+      const cms = cardCms(item.cms, notes, manual);
+      const card = triageCard(item, cms);
 
       try {
         if (linear.action === "create" && untracked.length) {
           const issue = await this.linear.createTriageIssue(
-            linear.title,
-            `${linear.description}\n\n${sourceFooter(untracked)}`,
+            agendaTitle(linear.title, date),
+            `${linear.description}\n\n${triageSection(card)}\n\n${sourceFooter(untracked)}`,
           );
           issues.set(issue.identifier, { ...issue, isNew: true });
           created.push(issue);
@@ -215,8 +219,12 @@ export class DailyAgenda {
         console.error(`[agenda] Linear update failed for ${item.id}`, error);
         linearNote = `⚠️ Couldn't update Linear: ${error instanceof Error ? error.message : String(error)}`;
       }
-      items.push({ ...item, issues: [...issues.values()], linearNote, cms: cardCms(item.cms, notes, manual) });
+      for (const issue of issues.values()) reviews.push({ issue, card });
+      items.push({ ...item, issues: [...issues.values()], linearNote, cms });
     }
+    // Existing issues get the `[Agenda - date]` title and the triage review comment (new ones have both already).
+    const titles = await reviewIssues(this.linear, date, reviews);
+    for (const item of items) item.issues = item.issues.map((i) => ({ ...i, title: titles.get(i.identifier) ?? i.title }));
 
     // Anything Claude left out of both lists is shown as skipped, so a dropped conversation is still visible.
     const classified = new Set([
@@ -381,6 +389,43 @@ ${message}
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
     fs.writeFileSync(this.stateFile, JSON.stringify(state, null, 2));
   }
+}
+
+/** What the triage review shows of a triage item. */
+export function triageCard(item: Omit<TriageItem, "linear" | "cms">, cms?: TriageCard["cms"]): TriageCard {
+  const { title, urgency, customers, summary, proposal } = item;
+  return { title, section: SECTIONS[item.section], urgency, customers, summary, proposal, cms };
+}
+
+export type ReviewLinear = Pick<LinearClient, "ensureAgendaTitle" | "upsertComment">;
+
+/**
+ * For every open, already existing issue of the agenda's items: the `[Agenda - date]` title and ONE "Agenda review —
+ * date" comment with the triage of every item pointing at it (updated in place; the local full review is kept).
+ * New issues and closed ones are skipped; a failure is logged per issue. Returns the titles it ended up with.
+ */
+export async function reviewIssues(
+  linear: ReviewLinear,
+  date: string,
+  reviews: { issue: LinkedIssue & { isNew?: boolean }; card: TriageCard }[],
+): Promise<Map<string, string>> {
+  const byIssue = new Map<string, { issue: LinkedIssue & { isNew?: boolean }; cards: TriageCard[] }>();
+  for (const { issue, card } of reviews) {
+    const entry = byIssue.get(issue.identifier) ?? { issue, cards: [] };
+    if (!entry.cards.includes(card)) entry.cards.push(card);
+    byIssue.set(issue.identifier, entry);
+  }
+  const titles = new Map<string, string>();
+  for (const [id, { issue, cards }] of byIssue) {
+    if (issue.isNew || ["completed", "canceled", "duplicate"].includes(issue.stateType ?? "")) continue;
+    try {
+      titles.set(id, (await linear.ensureAgendaTitle(id, date)).title);
+      await linear.upsertComment(id, triageReview(date, cards), (b) => isReviewComment(b, date), (b) => !isTriageOnly(b));
+    } catch (error) {
+      console.error(`[agenda] couldn't add the agenda review to ${id}`, error);
+    }
+  }
+  return titles;
 }
 
 /** OASIS codes and form keys the conversations and rejected rows name, most mentioned first. */

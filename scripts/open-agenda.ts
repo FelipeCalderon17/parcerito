@@ -7,6 +7,13 @@
  *   npm run agenda -- --no-db         # same, but visits come from the hub's cache only (no AWS login)
  *   npm run agenda -- --agenda-only   # old behaviour: download and open the agenda file, no hub
  *   npm run agenda -- --since 2026-10-22   # no meeting since then: also fetch those days' agendas, all in Today
+ *   npm run agenda -- --linear-dry-run     # print what it would post to Linear (titles, Agenda review comments)
+ *   npm run agenda -- --no-open            # don't open the browser (used by the weekday schedule)
+ *   npm run agenda -- --no-linear          # leave Linear alone
+ *   npm run agenda -- --publish            # also publish to the (retired) Lime dashboard
+ *
+ * By default the newest agenda's Linear issues get the `[Agenda - date]` title and an "Agenda review — date" comment
+ * with everything the hub shows (see linear-review.ts), and likely duplicates are listed (npm run duplicates).
  *
  * If the hub build fails (login cancelled, tunnel error…) the downloaded agenda is opened instead.
  */
@@ -15,7 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { WebClient } from "@slack/web-api";
-import { agendaFilesIn, buildHub } from "./hub-build.js";
+import { agendaFilesIn, buildHub, hubFlags } from "./hub-build.js";
 
 const AGENDA_FILE = /^nico-sync-\d{4}-\d{2}-\d{2}\.html$/;
 
@@ -78,7 +85,7 @@ async function main() {
     const noDb = argv.includes("--no-db");
     console.log(`Building review hub ${noDb ? "from cached visits (--no-db)" : "with the prod visit pull"}…`);
     try {
-      open = await buildHub({ agendaFiles: agendaFilesIn(dir), noDb, since });
+      open = await buildHub({ agendaFiles: agendaFilesIn(dir), noDb, since, ...hubFlags(argv) });
       console.log(`Hub ready: file://${open}`);
     } catch (error) {
       console.error(`Hub build failed: ${error instanceof Error ? error.message : error}`);
@@ -86,7 +93,8 @@ async function main() {
     }
   }
   console.log(`Opening file://${open}`);
-  execFile("open", [open]);
+  // The scheduled run (scripts/agenda-scheduled.sh) passes --no-open: nobody is waiting at the screen.
+  if (!argv.includes("--no-open")) execFile("open", [open]);
 }
 
 main().catch((error) => {

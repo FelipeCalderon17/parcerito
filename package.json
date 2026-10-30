@@ -23,7 +23,8 @@
     "manual-index": "tsx scripts/manual-index.ts",
     "agency-docs": "tsx scripts/agency-docs.ts",
     "megan-topics": "tsx --env-file=.env scripts/megan-topics.ts",
-    "review:publish": "tsx --env-file=.env scripts/publish-review.ts"
+    "review:publish": "tsx --env-file=.env scripts/publish-review.ts",
+    "duplicates": "tsx --env-file=.env scripts/duplicates.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.293",
